@@ -184,20 +184,64 @@ Supported value kinds, both directions: nested DTO, `List<DTO>`, `Map<K, DTO>`, 
 
 ## Reflection-free dynamic access
 
-Every generated type implements `DataHelper_I`, the contract all traits build on. Use it directly to write your own binder/serializer/validator without reflection:
+This is the distinguishing feature, and it's easy to undersell. Every generated type implements the readable contract `DataHelper_IR` (mutable types add the write side `DataHelper_I`), all backed by a generated `switch` — **no reflection**. So a generic helper written **once** works for *every* DTO **and** runs where reflection doesn't: TeaVM (Java→JS in the browser) and GraalVM native images.
+
+The contract:
 
 ```java
 var cls   = p.dataClass();                   // Person.class
 var names = p.fieldNames();                  // ["name","email","age"]
 var t     = p.getPropertyType("age");        // Integer.class
-var v     = p.getPropertyByName("age");
-p.setPropertyByName("age", value);           // auto-converts numeric/string
-// metadata for containers:
+var v     = p.getPropertyByName("age");      // read by name
+p.setPropertyByName("age", "31");            // write by name — coerced to Integer
+// container metadata:
 p.isListField(f); p.isMapField(f); p.isNestedObjectField(f);
 p.createNestedObject(f); p.createListElement(f); p.createMapValueElement(f);
 ```
 
-`DataHelper_I.convertType(value, targetType)` handles the common String/Number ↔ boxed-primitive coercions.
+What that unlocks — each helper written once, for *all* DTOs:
+
+**Bind HTTP query/form params to a DTO** — the boilerplate every web layer hand-writes, now generic (and it runs in the browser under TeaVM):
+
+```java
+static <T extends DataHelper_I<T>> T bind(T dto, Map<String,String> params) {
+    for (var f : dto.fieldNames())
+        if (params.containsKey(f))
+            dto.setPropertyByName(f, params.get(f));   // "500" -> Integer, "true" -> Boolean
+    return dto;
+}
+
+var query = bind(new ProductQuery(), request.params());   // ?q=phone&minPrice=500&inStock=true
+query.minPrice();                                          // real Integer 500, already coerced
+```
+
+**Field-level diff for PATCH / audit logs** — reads only `DataHelper_IR`, so it works on records and mutable DTOs alike:
+
+```java
+static List<String> changedFields(DataHelper_IR<?> a, DataHelper_IR<?> b) {
+    return a.fieldNames().stream()
+        .filter(f -> !Objects.equals(a.getPropertyByName(f), b.getPropertyByName(f)))
+        .toList();
+}
+
+var before = loaded.toRecord();             // cheap immutable snapshot
+loaded.setEmail("new@x.com");
+changedFields(before, loaded.toRecord());   // ["email"] -> audit trail / optimistic-lock / PATCH body
+```
+
+**Project to a map for any sink** — NoSQL document, cache, template engine, signed payload — with no JSON library:
+
+```java
+static Map<String,Object> toMap(DataHelper_IR<?> dto) {
+    var m = new LinkedHashMap<String,Object>();
+    for (var f : dto.fieldNames()) m.put(f, dto.getPropertyByName(f));
+    return m;
+}
+```
+
+The JSON and ArcadeDB traits use this same by-name mechanism — JSON is just one sink. The alternative, doing any of this over a plain `record`, means reflecting over `getRecordComponents()`/`invoke()`: slower, untyped, needs GraalVM reflection config, and simply unavailable on TeaVM.
+
+`DataHelper_I.convertType(value, targetType)` handles the common String/Number ↔ boxed-primitive coercions used by `setPropertyByName`.
 
 ## Immutable record projection
 
@@ -249,17 +293,8 @@ All under group `io.github.xyz-jphil`:
 - `xyz-jphil-datahelper-annotations` — `@DataHelper`, `@Data`.
 - `xyz-jphil-datahelper-processor` — annotation processor (handles both annotations); generates `_IR`/`_I`/`_R` (+`_A` for `@Data`); goes on `annotationProcessorPaths` only.
 - `xyz-jphil-datahelper-json` — optional JSON trait (JVM): `Json_IR` (`toJson`, read) / `Json_I` (`fromJson`, write).
-- `xyz-jphil-arcadedb-datahelper` — optional ArcadeDB trait (this module).
+- `xyz-jphil-arcadedb-datahelper` — optional ArcadeDB persistence trait + `@ArcadeData` (separate module; see its README).
 
-## ArcadeDB integration (this module)
+## ArcadeDB integration
 
-This module adds the `ArcadeDoc_I<Self>` trait for ArcadeDB persistence — an instance DSL plus document deserialization:
-
-```java
-public class Person implements Person_I<Person>, ArcadeDoc_I<Person> { ... }
-
-var doc = person.in(db).whereEq("email", person.email()).upsert();       // or .insert()
-new Person().fromArcadeDocument(doc);                                    // load back
-```
-
-Schema helpers (`SchemaBuilder`, `TypeDef`, `InitDoc`) and the full graph/vertex/edge/embedded-type DSL are out of scope here. For the complete, worked ArcadeDB tutorial see `project-journals/aracde_db_context/arcade-db-working-examples-2026-02-12.md`.
+The optional `xyz-jphil-arcadedb-datahelper` module adds an `@ArcadeData` annotation and an `ArcadeDoc_I` trait for persisting DataHelper DTOs to [ArcadeDB](https://arcadedb.com) — schema generation, an instance-level upsert/insert DSL, and document (de)serialization. See that **module's own README** for usage, and `project-journals/aracde_db_context/arcade-db-working-examples-2026-02-12.md` for the complete worked tutorial.
