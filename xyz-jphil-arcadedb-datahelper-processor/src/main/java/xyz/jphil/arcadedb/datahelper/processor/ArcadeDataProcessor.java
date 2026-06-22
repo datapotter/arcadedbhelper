@@ -131,8 +131,10 @@ public class ArcadeDataProcessor extends AbstractProcessor {
                 .build();
         classBuilder.addField(subField);
 
-        // Add field symbols ($fieldName constants)
-        CodeGeneratorUtils.addFieldSymbols(classBuilder, fields, packageName, className);
+        // Add field symbols ($fieldName constants).
+        // @ArcadeData keeps FIELDS on the sealed _A base (no record projection for v1), so nested
+        // chaining symbols reference <Nested>_A.FIELDS.
+        CodeGeneratorUtils.addFieldSymbols(classBuilder, fields, packageName, className, "_A");
 
         // Add FIELDS list
         CodeGeneratorUtils.addFieldsList(classBuilder, fields, packageName, className);
@@ -247,8 +249,9 @@ public class ArcadeDataProcessor extends AbstractProcessor {
         // 8. isNestedObjectField(String)
         classBuilder.addMethod(CodeGeneratorUtils.createIsNestedObjectFieldMethod(fields, false));
 
-        // 9-14. Map support methods
-        CodeGeneratorUtils.addMapMethods(classBuilder, fields, false);
+        // 9-14. Map support methods (read metadata + write factories)
+        CodeGeneratorUtils.addMapReadMethods(classBuilder, fields, false);
+        CodeGeneratorUtils.addMapWriteMethods(classBuilder, fields, false);
 
         // 15. Static factory method: of(Document)
         ClassName entityClassName = ClassName.get(packageName, className);
