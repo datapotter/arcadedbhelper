@@ -3,7 +3,14 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>io.github.xyz-jphil</groupId>
     <artifactId>xyz-jphil-arcadedb-datahelper-processor</artifactId>
-    <version>1.0</version>
+    <!--
+      1.1 — enum support (PRP-28 phase 1): enforces that a field's enum type carries @AsUuid or
+        @AsName (a backend-specific rule — "cannot store an enum" is a fact about ArcadeDB, not a
+        universal one), and generates, per enum-typed field, a reflection-free static
+        Map<String,EnumType> (built from EnumType.values(), never getEnumConstants()) plus the
+        isEnumField/resolveEnumFromStorage overrides. Additive; no change to non-enum codegen.
+    -->
+    <version>1.1</version>
     <packaging>jar</packaging>
 
     <properties>
@@ -17,21 +24,21 @@
         <dependency>
             <groupId>io.github.xyz-jphil</groupId>
             <artifactId>xyz-jphil-datahelper-processor</artifactId>
-            <version>1.0</version>
+            <version>1.1</version>
         </dependency>
 
         <!-- ArcadeDB DataHelper annotations and base -->
         <dependency>
             <groupId>io.github.xyz-jphil</groupId>
             <artifactId>xyz-jphil-arcadedb-datahelper</artifactId>
-            <version>1.0</version>
+            <version>1.5</version>
         </dependency>
 
         <!-- Base DataHelper (for DataHelper_I interface) -->
         <dependency>
             <groupId>io.github.xyz-jphil</groupId>
             <artifactId>xyz-jphil-datahelper-base</artifactId>
-            <version>1.0</version>
+            <version>1.1</version>
         </dependency>
 
         <!-- Code generation (Palantir fork with sealed class support) -->

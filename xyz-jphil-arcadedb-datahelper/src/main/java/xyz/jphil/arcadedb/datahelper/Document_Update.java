@@ -3,9 +3,11 @@ package xyz.jphil.arcadedb.datahelper;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import xyz.jphil.datahelper.DataHelper_I;
 import xyz.jphil.datahelper.Field_I;
+import xyz.jphil.datahelper.HasUuid;
 
 import java.util.*;
 import java.util.function.Supplier;
@@ -226,6 +228,10 @@ public class Document_Update {
      * @param val the value to set
      */
     private void set(String field, Object val) {
+        // Enum field (Phase 1, PRP-28): an @AsUuid constant becomes its uuid(), a plain @AsName
+        // constant becomes its name() — see HasUuid.storageValue. A no-op for every other value.
+        val = HasUuid.storageValue(val);
+
         var mySchema = mdoc.getDatabase().getSchema().getType(mdoc.getTypeName());
         var property = mySchema.getProperty(field);
 
@@ -256,9 +262,23 @@ public class Document_Update {
                     ", got " + val.getClass().getName());
             }
 
+        } else if (fieldType == Type.LINK) {
+            // Reference (LINK): store only the target's RID, never an embedded copy
+            if (val instanceof Link<?> link) {
+                mdoc.set(field, link.rid() == null ? null : RID.create(mdoc.getDatabase(), link.rid()));
+            } else {
+                mdoc.set(field, val); // RID / Identifiable / String passthrough
+            }
+
         } else if (fieldType == Type.LIST) {
-            // Handle list (may contain embedded objects)
-            if (val instanceof List) {
+            // Handle list (links -> list of RIDs; otherwise embedded objects)
+            if (val instanceof LinkList<?> linkList) {
+                List<Object> rids = new ArrayList<>();
+                for (Link<?> l : linkList.links()) {
+                    rids.add(l.rid() == null ? null : RID.create(mdoc.getDatabase(), l.rid()));
+                }
+                mdoc.set(field, rids);
+            } else if (val instanceof List) {
                 List<?> list = (List<?>) val;
                 List<Object> convertedList = new ArrayList<>();
 
@@ -277,8 +297,13 @@ public class Document_Update {
             }
 
         } else if (fieldType == Type.MAP) {
-            // Handle map (values may be embedded objects)
-            if (val instanceof Map) {
+            // Handle map (links -> map of RIDs; otherwise embedded objects)
+            if (val instanceof LinkMap<?, ?> linkMap) {
+                Map<Object, Object> rids = new HashMap<>();
+                linkMap.links().forEach((k, v) ->
+                    rids.put(k, v.rid() == null ? null : RID.create(mdoc.getDatabase(), v.rid())));
+                mdoc.set(field, rids);
+            } else if (val instanceof Map) {
                 Map<?, ?> map = (Map<?, ?>) val;
                 Map<Object, Object> convertedMap = new HashMap<>();
 
@@ -355,8 +380,8 @@ public class Document_Update {
                 embeddedDoc.set(fieldName, convertedMap);
 
             } else {
-                // Regular field
-                embeddedDoc.set(fieldName, value);
+                // Regular field (enum-aware; see HasUuid.storageValue)
+                embeddedDoc.set(fieldName, HasUuid.storageValue(value));
             }
         }
     }
@@ -412,8 +437,8 @@ public class Document_Update {
                 map.put(fieldName, convertedMap);
 
             } else {
-                // Regular field
-                map.put(fieldName, value);
+                // Regular field (enum-aware; see HasUuid.storageValue)
+                map.put(fieldName, HasUuid.storageValue(value));
             }
         }
 

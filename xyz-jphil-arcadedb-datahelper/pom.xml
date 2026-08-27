@@ -6,14 +6,78 @@
 
     <groupId>io.github.xyz-jphil</groupId>
     <artifactId>xyz-jphil-arcadedb-datahelper</artifactId>
-    <version>1.0</version>
+    <!--
+      1.4 — closes the delete side, and adds the repair for the failure that not having it caused.
+        * Delete: the typed bulk delete, the third verb beside Query (read) and Upsert (write).
+          db.command("sql", "DELETE FROM X WHERE ...") does not survive scale: removing ~370,000 rows
+          left the LSM indexes holding entries for records that were gone, and every LATER indexed
+          read then threw RecordNotFoundException from the middle of an iteration. Delete loads each
+          record and removes it through Database.deleteRecord — loading is not incidental, the engine
+          needs the record's own property values to know which index entries to remove. It also
+          collects the identities in ONE indexed pass first: the obvious SELECT ... LIMIT n loop
+          re-scans from the start every round and measured 82 SECONDS to remove 50,000 rows.
+        * Indexes: rebuild(), the only repair that works, plus orphans()/names() to see the damage.
+          An orphaned entry cannot be fixed by the code that caused it — it has no record to load, so
+          a delete cannot find it and a re-insert writes new entries beside it. Deleting and
+          re-writing every row of an affected type returns byte-identical orphan counts. Dropping the
+          indexes and rebuilding them from the records that exist is what restores agreement.
+          Definitions come back from InitDoc.initDocTypes, so index shape stays written down once.
+        * Query.skippingUnreadable() / unreadableSkipped(): one orphaned entry currently does not
+          degrade a query, it destroys it. This makes it skip and COUNT, so a caller can answer and
+          say what it lost. Deliberately does not log — count() and exists() are answered from the
+          index and still include orphans, and that disagreement is a useful signal.
+        Additive. No annotation-processor change, so no consumer's _A classes regenerate.
+      1.3 — closes the read side, which was the one place the library still forced string literals.
+        * Query: the typed read counterpart to Upsert. Field and value are bound by the generic
+          signature, so property("size").eq().value("big") against a Long column is now a compile
+          error rather than a silent mismatch. Covers the engine's whole operator set; states, rather
+          than hides, the two limits it inherits (no parentheses/NOT; nested embedded fields are not
+          filterable) and REFUSES the latter with a named exception instead of returning empty.
+          LAZY BY DEFAULT: Query implements Iterable, so for-each streams rows one at a time and a
+          break stops the scan; stream() short-circuits; list() is the single eager terminal and is
+          named so at the call site; documents()/vertices() expose the engine's own iterator for bulk
+          passes that want no per-row object at all.
+        * TypeDef.factory() + SchemaBuilder.factory(X::new): the type definition now carries its own
+          zero-reflection constructor reference, so reads read query(db, X.TYPEDEF) rather than
+          repeating X::new at every call site. Declared once in the model. A default method returning
+          null, so a TypeDef written before 1.3 still compiles and still satisfies the interface — it
+          simply gets a message naming both fixes, and the explicit query(db, TYPEDEF, X::new)
+          overload remains for that case. No annotation-processor change; no _A regeneration.
+        * Traverse: adjacency for a caller that already holds the Vertex. $out/$in/$both address by
+          $rid() and therefore spend RID.create(db,rid).asVertex(true) to get a vertex back — pure
+          waste for a caller that reached the vertex by an indexed lookup, and a redundant record
+          fetch per node over a subtree walk.
+        Both are additive. No annotation-processor change, so no consumer's _A classes regenerate.
+      1.2 — adds Upsert: a typed, field-level upsert for DOCUMENT and VERTEX types (no string literals,
+            field and value bound by generics, complements the whole-object instance DSL).
+      1.1 — ArcadeDB 26.x compatibility. Two fixes, both binary-compatibility only, no API change:
+        * 26.x removed the RID(BasicDatabase, ...) constructors in favour of static RID.create(...).
+          The old calls threw NoSuchMethodError, which disabled $out/$in/$both AND every Link<T>
+          resolve and write — the whole transient-reference feature, in both directions.
+        * Record creation went through newDocument unconditionally, so the instance DSL
+          (obj.in(db).whereEq(..).upsert()) failed on any @ArcadeData(type = VERTEX) with
+          "Cannot create a document of type 'X'". A vertex IS a document in ArcadeDB, so creation now
+          dispatches on the declared schema type — see NewRecord.
+      Published as 1.1 rather than replacing 1.0, which nine other projects still resolve.
+      1.5 — enum support (PRP-28 phase 1): a field of an enum type carrying @AsUuid or @AsName is now
+        storable, with no annotation on the field itself. ArcadeDoc_I.fromArcadeDocument/fromArcadeMap
+        resolve the stored uuid/name string back to the constant via the generated per-field map
+        (isEnumField/resolveEnumFromStorage; never throws on an unmatched id — returns null). InitDoc
+        maps an enum-typed property to Type.STRING. Document_Update.set/populateEmbeddedDocument/
+        dataHelperToMap, Update.whereEq, Query.add (eq/neq/lt/le/gt/ge/between/in) and Upsert.save all
+        convert an enum value to its stored string via HasUuid.storageValue before it reaches the
+        engine — Upsert.save previously wrote straight to the engine with no such conversion at all
+        (an @AsUuid constant would have silently stored its name instead of its uuid); fixed here as
+        part of closing this gap. Additive; no schema-property-type change for non-enum fields.
+    -->
+    <version>1.5</version>
     <packaging>jar</packaging>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
-        <arcadedb.version>25.7.1</arcadedb.version>
+        <arcadedb.version>26.7.3</arcadedb.version>
     </properties>
 
     <dependencies>
@@ -21,14 +85,14 @@
         <dependency>
             <groupId>io.github.xyz-jphil</groupId>
             <artifactId>xyz-jphil-datahelper-base</artifactId>
-            <version>1.0</version>
+            <version>1.1</version>
         </dependency>
 
         <!-- DataHelper Annotations -->
         <dependency>
             <groupId>io.github.xyz-jphil</groupId>
             <artifactId>xyz-jphil-datahelper-annotations</artifactId>
-            <version>1.0</version>
+            <version>1.1</version>
         </dependency>
 
         <!-- ArcadeDB Engine -->
@@ -73,7 +137,7 @@
                         <path>
                             <groupId>io.github.xyz-jphil</groupId>
                             <artifactId>xyz-jphil-datahelper-processor</artifactId>
-                            <version>1.0</version>
+                            <version>1.1</version>
                         </path>
                         <path>
                             <groupId>org.projectlombok</groupId>

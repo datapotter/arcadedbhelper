@@ -26,6 +26,7 @@ public class SchemaBuilder<E extends DataHelper_I<E>> implements TypeDef<E> {
 
     private final Class<E> definition;
     private final ArcadeType arcadeType;
+    private java.util.function.Supplier<E> factory;
     private List<String> fields = new ArrayList<>();
     private List<Field_I<E, ?>> fieldObjects = new ArrayList<>();  // Store actual Field_I objects
     private List<Field_I<E, ?>> linkFields = new ArrayList<>();  // LINK type fields ($$prefix)
@@ -202,6 +203,26 @@ public class SchemaBuilder<E extends DataHelper_I<E>> implements TypeDef<E> {
     @Deprecated
     public static <E extends DataHelper_I<E>> SchemaBuilder<E> defType(Class<E> definition) {
         return new SchemaBuilder<>(definition, ArcadeType.DOCUMENT);
+    }
+
+    /**
+     * Declare the type's zero-reflection factory — always {@code E::new}.
+     *
+     * <p>One line here removes the constructor reference from every read in the codebase:
+     * {@code query(db, DriveFile.TYPEDEF)} instead of {@code query(db, DriveFile.TYPEDEF,
+     * DriveFile::new)} at each call site.
+     *
+     * @param factory the entity's no-arg constructor reference
+     * @return this builder
+     */
+    public SchemaBuilder<E> factory(java.util.function.Supplier<E> factory) {
+        this.factory = factory;
+        return this;
+    }
+
+    @Override
+    public java.util.function.Supplier<E> factory() {
+        return factory;
     }
 
     @Override

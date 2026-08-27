@@ -9,6 +9,9 @@ import java.util.*;
 import xyz.jphil.datahelper.DataHelper_I;
 import xyz.jphil.datahelper.Field_I;
 import xyz.jphil.datahelper.DataField;
+import xyz.jphil.datahelper.LinkField;
+import xyz.jphil.datahelper.LinkListField;
+import xyz.jphil.datahelper.LinkMapField;
 import xyz.jphil.datahelper.ListDataField;
 import xyz.jphil.datahelper.MapDataField;
 
@@ -161,6 +164,37 @@ public class InitDoc {
                 if (!valueFields.isEmpty()) {
                     fieldsMap.put(valueType, valueFields);
                     // Recursively collect value dependencies first
+                    collectDependencies(valueType, valueFields, collected, fieldsMap);
+                }
+
+            } else if (field instanceof LinkField) {
+                // Reference (LINK) target — a separate record type that must exist before the owner
+                LinkField<?, ?> linkField = (LinkField<?, ?>) field;
+                Class<?> targetType = linkField.type();
+                @SuppressWarnings("unchecked")
+                List<Field_I<?, ?>> targetFields = (List<Field_I<?, ?>>) linkField.targetFields();
+                if (!targetFields.isEmpty()) {
+                    fieldsMap.put(targetType, targetFields);
+                    collectDependencies(targetType, targetFields, collected, fieldsMap);
+                }
+
+            } else if (field instanceof LinkListField) {
+                LinkListField<?, ?> linkList = (LinkListField<?, ?>) field;
+                Class<?> elementType = linkList.elementType();
+                @SuppressWarnings("unchecked")
+                List<Field_I<?, ?>> elementFields = (List<Field_I<?, ?>>) linkList.elementFields();
+                if (!elementFields.isEmpty()) {
+                    fieldsMap.put(elementType, elementFields);
+                    collectDependencies(elementType, elementFields, collected, fieldsMap);
+                }
+
+            } else if (field instanceof LinkMapField) {
+                LinkMapField<?, ?, ?> linkMap = (LinkMapField<?, ?, ?>) field;
+                Class<?> valueType = linkMap.valueType();
+                @SuppressWarnings("unchecked")
+                List<Field_I<?, ?>> valueFields = (List<Field_I<?, ?>>) linkMap.valueFields();
+                if (!valueFields.isEmpty()) {
+                    fieldsMap.put(valueType, valueFields);
                     collectDependencies(valueType, valueFields, collected, fieldsMap);
                 }
             }
@@ -324,6 +358,30 @@ public class InitDoc {
 
             p = documentType.createProperty(fieldName, Type.MAP);
             p.setOfType(valueTypeName);
+
+        } else if (field instanceof LinkField) {
+            // Reference (LINK) — stores the target's RID; constrain to the target type if registered.
+            LinkField<?, ?> linkField = (LinkField<?, ?>) field;
+            p = documentType.createProperty(fieldName, Type.LINK);
+            String targetTypeName = linkField.type().getSimpleName();
+            if (documentType.getSchema().existsType(targetTypeName)) {
+                p.setOfType(targetTypeName);
+            }
+
+        } else if (field instanceof LinkListField) {
+            // LIST of references — elements are RIDs (not embedded); left element-untyped.
+            p = documentType.createProperty(fieldName, Type.LIST);
+
+        } else if (field instanceof LinkMapField) {
+            // MAP of references — values are RIDs (not embedded); left value-untyped.
+            p = documentType.createProperty(fieldName, Type.MAP);
+
+        } else if (field.type().isEnum()) {
+            // Enum field (Phase 1, PRP-28): stored as a uuid or name string — ArcadeDB has no
+            // concept of an arbitrary Java enum class, and createProperty(name, Class<?>) does not
+            // recognize one. isEnum() is a plain Class metadata bit (like isInterface()/isArray()),
+            // not reflection in the getEnumConstants() sense this library otherwise avoids.
+            p = documentType.createProperty(fieldName, Type.STRING);
 
         } else {
             // Regular Field - primitive or simple type

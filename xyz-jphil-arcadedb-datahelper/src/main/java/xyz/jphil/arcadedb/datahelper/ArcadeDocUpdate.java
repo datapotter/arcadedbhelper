@@ -183,7 +183,7 @@ public class ArcadeDocUpdate<E extends ArcadeDoc_I<E>> {
     private com.arcadedb.database.Document execute(boolean isUpsert) {
         // If no where conditions and insert mode, create new document directly
         if (!isUpsert && whereConditions.isEmpty()) {
-            var mDoc = db.newDocument(typeName);
+            var mDoc = NewRecord.of(db, typeName);   // VERTEX-aware: a vertex IS a document
             var docUpdate = Document_Update.updateDocument(mDoc);
 
             // Map values from source (all fields or selective)

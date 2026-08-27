@@ -3,6 +3,7 @@ package xyz.jphil.arcadedb.datahelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.index.IndexCursor;
+import xyz.jphil.datahelper.HasUuid;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.function.Consumer;
@@ -31,14 +32,15 @@ public class Update {
 
     // String-based version
     public Update whereEq(String key, Object value) {
-        lookupBy.put(key, value);
+        // Enum-aware (Phase 1, PRP-28): a raw enum value would otherwise reach the index lookup
+        // below, which is keyed on the stored uuid/name string, not the Java constant.
+        lookupBy.put(key, HasUuid.storageValue(value));
         return this;
     }
 
     // Type-safe Field_I version
     public <T> Update whereEq(xyz.jphil.datahelper.Field_I<?, T> field, T value) {
-        lookupBy.put(field.name(), value);
-        return this;
+        return whereEq(field.name(), value);
     }
 
     public Document_Update upsert() {
@@ -90,7 +92,7 @@ public class Update {
         MutableDocument mDoc;
         if (cur == null || !cur.hasNext()) {
             alreadyExistsUpdater.accept(false);
-            mDoc = database.newDocument(typeName);
+            mDoc = NewRecord.of(database, typeName);   // VERTEX-aware: a vertex IS a document
             return mDoc;
         } else {
             alreadyExistsUpdater.accept(true);

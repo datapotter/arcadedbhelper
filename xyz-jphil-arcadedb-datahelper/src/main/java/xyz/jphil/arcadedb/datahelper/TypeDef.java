@@ -26,6 +26,35 @@ public interface TypeDef<E extends DataHelper_I<E>> {
     }
 
     /**
+     * A zero-reflection factory for this type — the {@code E::new} constructor reference.
+     *
+     * <p>Declared once, on the type definition, so that reading code never has to repeat it:
+     *
+     * <pre>
+     * public static final TypeDef&lt;DriveFile&gt; TYPEDEF =
+     *         schemaBuilder()
+     *                 .factory(DriveFile::new)     // &lt;- here, once
+     *                 .unique($fileId)
+     *                 .__();
+     *
+     * query(db, DriveFile.TYPEDEF).eq($fileId, id).firstOrNull();   // &lt;- not here, ever
+     * </pre>
+     *
+     * <p>A constructor reference rather than {@code definition().newInstance()} on purpose: reflective
+     * instantiation would need GraalVM-native configuration and is unavailable on TeaVM, which is the
+     * whole reason DataHelper avoids reflection everywhere else.
+     *
+     * <p>Defaults to {@code null} so that a {@code TypeDef} written before this existed still compiles
+     * and still satisfies the interface. Callers that need it say so with a clear error rather than a
+     * {@code NullPointerException} — see {@code Query}.
+     *
+     * @return the factory, or {@code null} if this type definition does not declare one
+     */
+    default java.util.function.Supplier<E> factory() {
+        return null;
+    }
+
+    /**
      * Get the list of field names to be created in the schema.
      *
      * @return list of field names

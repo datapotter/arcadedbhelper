@@ -103,6 +103,38 @@ public class ArcadeDataProcessor extends AbstractProcessor {
             return; // Validation errors found
         }
 
+        // Enum fields need one of @AsUuid/@AsName to be storable here (Phase 1, PRP-28). The base
+        // analyzer accepts any enum structurally — "cannot store an enum" is a fact about THIS
+        // backend, not a universal one — so that rule is enforced here, not in FieldAnalyzer.
+        boolean hasUnsupportedEnum = false;
+        for (FieldInfo f : fields) {
+            if (f.isEnum && !f.isEnumAsUuid && !f.isEnumAsName) {
+                processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
+                        String.format(
+                            "Field '%s' has enum type '%s', which carries neither @AsUuid nor @AsName. "
+                            + "ArcadeDB cannot store an enum without a declared string encoding: annotate "
+                            + "'%s' with @AsUuid(<encoding>) (and implement HasUuid) or with @AsName.",
+                            f.name, f.type, f.type),
+                        element);
+                hasUnsupportedEnum = true;
+            }
+        }
+        if (hasUnsupportedEnum) {
+            return;
+        }
+
+        // Warn (don't fail) when a data field is spelled like a reserved graph accessor: the $rid
+        // symbol then refers to the user's data field while $rid()/$out()/$in() remain the
+        // identity/endpoint accessors. Storage uses __rid/__out/__in so it still compiles.
+        for (FieldInfo f : fields) {
+            if (f.name.equals("rid") || f.name.equals("out") || f.name.equals("in")) {
+                processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING,
+                        "Field '" + f.name + "' shares its spelling with the generated $" + f.name
+                        + "() accessor; the $" + f.name + " symbol now refers to your data field. "
+                        + "Consider renaming to avoid confusion.", element);
+            }
+        }
+
         // Build sealed abstract class
         TypeSpec.Builder classBuilder = TypeSpec.classBuilder(abstractClassName)
                 .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT, Modifier.SEALED)
@@ -263,6 +295,119 @@ public class ArcadeDataProcessor extends AbstractProcessor {
                 .addStatement("return instance.fromArcadeDocument(doc)")
                 .build();
         classBuilder.addMethod(ofMethod);
+
+        // ========== Identity ($rid) — overrides ArcadeDoc_I defaults, set by the load layer ==========
+        // Storage field is __rid (not $rid) so it can never collide with the auto-generated $<field>
+        // symbol of a data field named "rid"; the public accessor stays $rid().
+        ClassName ownerClass = ClassName.get(packageName, className);
+        classBuilder.addField(FieldSpec.builder(String.class, "__rid", Modifier.PRIVATE).build());
+        classBuilder.addMethod(MethodSpec.methodBuilder("$rid")
+                .addModifiers(Modifier.PUBLIC).addAnnotation(Override.class)
+                .returns(String.class)
+                .addStatement("return this.$N", "__rid")
+                .build());
+        classBuilder.addMethod(MethodSpec.methodBuilder("$rid")
+                .addModifiers(Modifier.PUBLIC).addAnnotation(Override.class)
+                .addParameter(String.class, "rid")
+                .addStatement("this.$N = rid", "__rid")
+                .build());
+
+        // ========== Edge endpoints ($out / $in) — only for EDGE types ==========
+        // Storage fields are __out/__in (not $out/$in) so they never collide with the auto-generated
+        // $<field> symbol of a data field named "out"/"in"; public accessors stay $out()/$in().
+        if ("EDGE".equals(arcadeType)) {
+            ClassName linkType = ClassName.get("xyz.jphil.arcadedb.datahelper", "Link");
+            TypeName linkWild = ParameterizedTypeName.get(linkType, WildcardTypeName.subtypeOf(Object.class));
+            for (String end : List.of("out", "in")) {
+                String method = "$" + end, fld = "__" + end;
+                classBuilder.addField(FieldSpec.builder(String.class, fld, Modifier.PRIVATE).build());
+                classBuilder.addMethod(MethodSpec.methodBuilder(method)
+                        .addModifiers(Modifier.PUBLIC).addAnnotation(Override.class)
+                        .returns(linkWild)
+                        .addStatement("return this.$N == null ? null : $T.ofRid(this.$N)", fld, linkType, fld)
+                        .build());
+                classBuilder.addMethod(MethodSpec.methodBuilder(method)
+                        .addModifiers(Modifier.PUBLIC).addAnnotation(Override.class)
+                        .addParameter(String.class, "rid")
+                        .addStatement("this.$N = rid", fld)
+                        .build());
+            }
+        }
+
+        // ========== Reference (LINK) support — only when the class actually has reference fields ==========
+        boolean hasLinks = fields.stream().anyMatch(f -> f.isLink || f.isLinkList || f.isLinkMap);
+        if (hasLinks) {
+            classBuilder.addMethod(CodeGeneratorUtils.createIsLinkFieldMethod(fields, false));
+            classBuilder.addMethod(CodeGeneratorUtils.createIsLinkListFieldMethod(fields, false));
+            classBuilder.addMethod(CodeGeneratorUtils.createIsLinkMapFieldMethod(fields, false));
+            classBuilder.addMethod(CodeGeneratorUtils.createLinkTargetTypeMethod(fields, false));
+            classBuilder.addMethod(CodeGeneratorUtils.createLinkKeyTypeMethod(fields, false));
+            classBuilder.addMethod(CodeGeneratorUtils.createLinkTargetFactoryMethod(fields, false));
+
+            // Convenience fluent setters for single Link<T> fields: customer(Customer) / customer(rid) / customerOfRid(rid).
+            // The base setter customer(Link<T>) is already generated by the standard fluent-setter loop.
+            ClassName linkClass = ClassName.get("xyz.jphil.arcadedb.datahelper", "Link");
+            for (FieldInfo f : fields) {
+                if (!f.isLink) continue;
+                String setterName = "set" + ProcessorUtils.capitalize(f.name);
+                classBuilder.addMethod(MethodSpec.methodBuilder(f.name)
+                        .addModifiers(Modifier.PUBLIC)
+                        .addParameter(f.linkTargetType, "value")
+                        .returns(ownerClass)
+                        .addStatement("$N($T.of(value))", setterName, linkClass)
+                        .addStatement("return sub")
+                        .build());
+                classBuilder.addMethod(MethodSpec.methodBuilder(f.name)
+                        .addModifiers(Modifier.PUBLIC)
+                        .addParameter(String.class, "rid")
+                        .returns(ownerClass)
+                        .addStatement("$N($T.ofRid(rid, $T::new))", setterName, linkClass, f.linkTargetType)
+                        .addStatement("return sub")
+                        .build());
+                classBuilder.addMethod(MethodSpec.methodBuilder(f.name + "OfRid")
+                        .addModifiers(Modifier.PUBLIC)
+                        .addParameter(String.class, "rid")
+                        .returns(ownerClass)
+                        .addStatement("return $N(rid)", f.name)
+                        .build());
+            }
+
+            // Convenience setters for reference collections: reviewers(List<Target>) and
+            // ledgers(Map<K,Target>) build the carrier from target objects via Link.of. The base
+            // reviewers(LinkList)/ledgers(LinkMap) setters are already generated by the standard loop.
+            ClassName linkListClass = ClassName.get("xyz.jphil.arcadedb.datahelper", "LinkList");
+            ClassName linkMapClass = ClassName.get("xyz.jphil.arcadedb.datahelper", "LinkMap");
+            ClassName listClass = ClassName.get("java.util", "List");
+            ClassName mapClass = ClassName.get("java.util", "Map");
+            ClassName linkedHashMapClass = ClassName.get("java.util", "LinkedHashMap");
+            for (FieldInfo f : fields) {
+                String setterName = "set" + ProcessorUtils.capitalize(f.name);
+                if (f.isLinkList) {
+                    classBuilder.addMethod(MethodSpec.methodBuilder(f.name)
+                            .addModifiers(Modifier.PUBLIC)
+                            .addParameter(ParameterizedTypeName.get(listClass, f.linkTargetType), "targets")
+                            .returns(ownerClass)
+                            .addStatement("$N($T.of(targets.stream().map($T::of).toList()))",
+                                    setterName, linkListClass, linkClass)
+                            .addStatement("return sub")
+                            .build());
+                } else if (f.isLinkMap) {
+                    classBuilder.addMethod(MethodSpec.methodBuilder(f.name)
+                            .addModifiers(Modifier.PUBLIC)
+                            .addParameter(ParameterizedTypeName.get(mapClass, f.linkMapKeyType, f.linkTargetType), "targets")
+                            .returns(ownerClass)
+                            .addStatement("var m = new $T<$T, $T<$T>>()",
+                                    linkedHashMapClass, f.linkMapKeyType, linkClass, f.linkTargetType)
+                            .addStatement("targets.forEach((k, v) -> m.put(k, $T.of(v)))", linkClass)
+                            .addStatement("$N($T.of(m))", setterName, linkMapClass)
+                            .addStatement("return sub")
+                            .build());
+                }
+            }
+        }
+
+        // ========== Enum field support (Phase 1, PRP-28) — only when the class has enum fields ==========
+        CodeGeneratorUtils.addEnumSupport(classBuilder, fields);
 
         // Build and write the file
         TypeSpec classSpec = classBuilder.build();

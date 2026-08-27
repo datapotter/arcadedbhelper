@@ -297,4 +297,4 @@ All under group `io.github.xyz-jphil`:
 
 ## ArcadeDB integration
 
-The optional `xyz-jphil-arcadedb-datahelper` module adds an `@ArcadeData` annotation and an `ArcadeDoc_I` trait for persisting DataHelper DTOs to [ArcadeDB](https://arcadedb.com) — schema generation, an instance-level upsert/insert DSL, and document (de)serialization. See that **module's own README** for usage, and `project-journals/aracde_db_context/arcade-db-working-examples-2026-02-12.md` for the complete worked tutorial.
+The optional `xyz-jphil-arcadedb-datahelper` module adds an `@ArcadeData` annotation and an `ArcadeDoc_I` trait for persisting DataHelper DTOs to [ArcadeDB](https://arcadedb.com) — schema generation, an instance-level upsert/insert DSL, and document (de)serialization. See that **module's own README** for usage, and `project-journals/aracde_db_context/arcade-db-working-examples-2026-07-31.md` for the complete worked tutorial.
