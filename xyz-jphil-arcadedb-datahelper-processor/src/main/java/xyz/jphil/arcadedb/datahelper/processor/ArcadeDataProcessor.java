@@ -103,18 +103,18 @@ public class ArcadeDataProcessor extends AbstractProcessor {
             return; // Validation errors found
         }
 
-        // Enum fields need one of @AsUuid/@AsName to be storable here (Phase 1, PRP-28). The base
-        // analyzer accepts any enum structurally — "cannot store an enum" is a fact about THIS
-        // backend, not a universal one — so that rule is enforced here, not in FieldAnalyzer.
+        // Enum fields — bare (PRP-28 phase 1) or a List of them (PRP-30) — need one of @AsUuid/@AsName
+        // to be storable here. The base analyzer accepts any enum structurally — "cannot store an
+        // enum" is a fact about THIS backend, not a universal one — so the rule is enforced here.
         boolean hasUnsupportedEnum = false;
         for (FieldInfo f : fields) {
-            if (f.isEnum && !f.isEnumAsUuid && !f.isEnumAsName) {
+            if (f.isAnyEnum() && !f.isEnumAsUuid && !f.isEnumAsName) {
                 processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
                         String.format(
-                            "Field '%s' has enum type '%s', which carries neither @AsUuid nor @AsName. "
-                            + "ArcadeDB cannot store an enum without a declared string encoding: annotate "
-                            + "'%s' with @AsUuid(<encoding>) (and implement HasUuid) or with @AsName.",
-                            f.name, f.type, f.type),
+                            "Field '%s' is declared '%s', whose enum type '%s' carries neither @AsUuid nor "
+                            + "@AsName. ArcadeDB cannot store an enum without a declared string encoding: "
+                            + "annotate '%s' with @AsUuid(<encoding>) (and implement HasUuid) or with @AsName.",
+                            f.name, f.type, f.enumType, f.enumType),
                         element);
                 hasUnsupportedEnum = true;
             }
@@ -407,7 +407,7 @@ public class ArcadeDataProcessor extends AbstractProcessor {
         }
 
         // ========== Enum field support (Phase 1, PRP-28) — only when the class has enum fields ==========
-        CodeGeneratorUtils.addEnumSupport(classBuilder, fields);
+        CodeGeneratorUtils.addEnumSupport(classBuilder, fields, false);
 
         // Build and write the file
         TypeSpec classSpec = classBuilder.build();

@@ -182,6 +182,34 @@ Traits serialize recursively **when the element type is itself a DataHelper DTO*
 
 Supported value kinds, both directions: nested DTO, `List<DTO>`, `Map<K, DTO>`, and plain scalars/collections. Non-string `Map` keys are coerced via `DataHelper_I.convertType`.
 
+## Enums — `@AsUuid` / `@AsName`
+
+An enum-typed field, or a `List` of one, is stored as a string. **Which** string is declared on the enum itself, once per vocabulary, and there is no default — omitting both annotations is a compile error at the first field that tries to store it, naming both options.
+
+```java
+@AsUuid(BASE64URL)                        // stored as uuid(): identity survives a rename
+public enum Outcome implements HasUuid {
+    UNKNOWN("K8Qo2wJaOz7H_AeP6KqeIQ"), FAVOURABLE("Pq6v4KrIYbjzEBH-zGTVrw");
+    private final String uuid;
+    Outcome(String uuid) { this.uuid = uuid; }
+    @Override public String uuid() { return uuid; }
+}
+
+@AsName public enum Severity { LOW, MEDIUM, HIGH }   // stored as name()
+
+@Data public final class Ticket extends Ticket_A {
+    Outcome outcome;              // fields carry NO annotation
+    List<Outcome> outcomes;       // a list of them stores a list of the same strings
+    List<Severity> severities;
+}
+```
+
+Why the storage form is declared rather than inferred from `implements HasUuid`: adding that interface later is a two-word edit, and under inference it would silently change the meaning of every row already written. Why two annotations rather than one parameterised: JPA's `@Enumerated` has a default (`ORDINAL`), so reordering constants corrupts data through a parameter nobody typed — with two annotations there is nothing to omit.
+
+`@AsUuid` validates every constant's literal against the declared encoding's alphabet and fixed 128-bit length (`BASE64URL` 22, `BASE26_LOWER` 28, `HEX` 32, `UUID_CANONICAL` 36) at the enum's own declaration, and rejects duplicates within the enum. What it cannot catch is an id **changed** from one valid value to another — that compiles clean and orphans every stored row, so keep the ids in a committed list and assert against it.
+
+Resolution never throws. A stored string matching no constant means the row was written by newer code, not that it is corrupt: a single field resolves to `null`, and an element of a list is dropped, so the list a caller receives holds exactly the constants this build can name.
+
 ## Reflection-free dynamic access
 
 This is the distinguishing feature, and it's easy to undersell. Every generated type implements the readable contract `DataHelper_IR` (mutable types add the write side `DataHelper_I`), all backed by a generated `switch` — **no reflection**. So a generic helper written **once** works for *every* DTO **and** runs where reflection doesn't: TeaVM (Java→JS in the browser) and GraalVM native images.

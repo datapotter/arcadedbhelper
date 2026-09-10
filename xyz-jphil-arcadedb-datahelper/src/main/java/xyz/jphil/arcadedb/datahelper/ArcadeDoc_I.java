@@ -7,11 +7,8 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import xyz.jphil.datahelper.DataHelper_I;
+import xyz.jphil.datahelper.MapReads;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -84,13 +81,19 @@ public interface ArcadeDoc_I<E extends ArcadeDoc_I<E>>
         return ArcadeDocUpdate.from(db, (E) this);
     }
 
-    // ========== Deserialization Methods ==========
+    // ========== Deserialization ==========
+    // The generic map-to-object walk lives in `base` (MapReads); what is ArcadeDB's own — record
+    // identity, edge endpoints, native record types and references — is supplied here and in
+    // ArcadeMapReads. An embedded @Data block is therefore reachable: it needs no trait of its own.
 
     /**
-     * Populate this object from an ArcadeDB Document.
-     * Handles nested objects, lists, and maps recursively.
+     * Populate this object from an ArcadeDB {@link Document}, recursing through embedded documents,
+     * lists and maps of them, and resolving references.
      *
-     * @param doc the ArcadeDB document to read from
+     * <p>Fields are read straight off the document rather than through an intermediate map, so a
+     * typed read costs no copy of the record it is reading.</p>
+     *
+     * @param doc the document to read from; {@code null} is a no-op
      * @return this object for fluent chaining
      */
     @SuppressWarnings("unchecked")
@@ -111,120 +114,9 @@ public interface ArcadeDoc_I<E extends ArcadeDoc_I<E>>
             if (edge.getIn() != null) $in(edge.getIn().toString());
         }
 
-        for (String fieldName : fieldNames()) {
-            if (!doc.has(fieldName)) {
-                continue;
-            }
-
-            Object value = doc.get(fieldName);
-            if (value == null) {
-                continue;
-            }
-
-            Class<?> fieldType = getPropertyType(fieldName);
-            if (fieldType == null) {
-                continue;
-            }
-
-            if (isLinkField(fieldName)) {
-                // Reference (LINK): value is a bare RID (unresolved) or a projected sub-document
-                setPropertyByName(fieldName, toLink(fieldName, value));
-            } else if (isLinkListField(fieldName) && value instanceof List) {
-                // List of references (LIST of LINK)
-                List<Link<?>> ls = new ArrayList<>();
-                for (Object item : (List<?>) value) {
-                    ls.add(toLink(fieldName, item));
-                }
-                setPropertyByName(fieldName, new LinkList(ls));
-            } else if (isLinkMapField(fieldName) && value instanceof Map) {
-                // Keyed map of references (MAP of LINK)
-                Class<?> keyType = linkKeyType(fieldName);
-                Map<Object, Link<?>> lm = new LinkedHashMap<>();
-                for (Map.Entry<?, ?> e : ((Map<?, ?>) value).entrySet()) {
-                    lm.put(DataHelper_I.convertType(e.getKey(), keyType), toLink(fieldName, e.getValue()));
-                }
-                setPropertyByName(fieldName, new LinkMap(lm));
-            } else if (isEnumField(fieldName) && value instanceof String storedValue) {
-                // Enum field (Phase 1, PRP-28): stored as a uuid or name string; resolve to the
-                // declared constant. Never throws — an unmatched id means the row is newer than
-                // this build, not that it is corrupt; resolveEnumFromStorage returns null for it.
-                setPropertyByName(fieldName, resolveEnumFromStorage(fieldName, storedValue));
-            } else if (isNestedObjectField(fieldName)) {
-                // Nested DataHelper object
-                if (value instanceof Document) {
-                    // ArcadeDB Document (ImmutableEmbeddedDocument)
-                    DataHelper_I<?> nested = createNestedObject(fieldName);
-                    if (nested instanceof ArcadeDoc_I) {
-                        ((ArcadeDoc_I<?>) nested).fromArcadeDocument((Document) value);
-                        setPropertyByName(fieldName, nested);
-                    }
-                } else if (value instanceof Map) {
-                    // Plain Map
-                    DataHelper_I<?> nested = createNestedObject(fieldName);
-                    if (nested instanceof ArcadeDoc_I) {
-                        ((ArcadeDoc_I<?>) nested).fromArcadeMap((Map<String, Object>) value);
-                        setPropertyByName(fieldName, nested);
-                    }
-                }
-            } else if (isListField(fieldName) && value instanceof List) {
-                // List field
-                List<?> sourceList = (List<?>) value;
-                List<Object> targetList = new ArrayList<>();
-
-                for (Object item : sourceList) {
-                    if (item instanceof Document) {
-                        // ArcadeDB Document (ImmutableEmbeddedDocument)
-                        DataHelper_I<?> listElement = createListElement(fieldName);
-                        if (listElement instanceof ArcadeDoc_I) {
-                            ((ArcadeDoc_I<?>) listElement).fromArcadeDocument((Document) item);
-                            targetList.add(listElement);
-                        } else {
-                            targetList.add(item);
-                        }
-                    } else if (item instanceof Map) {
-                        // Plain Map
-                        DataHelper_I<?> listElement = createListElement(fieldName);
-                        if (listElement instanceof ArcadeDoc_I) {
-                            ((ArcadeDoc_I<?>) listElement).fromArcadeMap((Map<String, Object>) item);
-                            targetList.add(listElement);
-                        } else {
-                            targetList.add(item);
-                        }
-                    } else {
-                        targetList.add(item);
-                    }
-                }
-                setPropertyByName(fieldName, targetList);
-            } else if (isMapField(fieldName) && value instanceof Map) {
-                // Map field
-                Map<?, ?> sourceMap = (Map<?, ?>) value;
-                Map<Object, Object> targetMap = (Map<Object, Object>) createMapInstance(fieldName);
-
-                Class<?> keyType = getMapKeyType(fieldName);
-                Class<?> valueType = getMapValueType(fieldName);
-
-                for (Map.Entry<?, ?> entry : sourceMap.entrySet()) {
-                    Object key = DataHelper_I.convertType(entry.getKey(), keyType);
-                    Object mapValue = entry.getValue();
-
-                    if (isMapValueDataHelper(fieldName) && mapValue instanceof Map) {
-                        DataHelper_I<?> mapValueElement = createMapValueElement(fieldName);
-                        if (mapValueElement instanceof ArcadeDoc_I) {
-                            ((ArcadeDoc_I<?>) mapValueElement).fromArcadeMap((Map<String, Object>) mapValue);
-                            targetMap.put(key, mapValueElement);
-                        } else {
-                            targetMap.put(key, mapValue);
-                        }
-                    } else {
-                        Object convertedValue = DataHelper_I.convertType(mapValue, valueType);
-                        targetMap.put(key, convertedValue);
-                    }
-                }
-                setPropertyByName(fieldName, targetMap);
-            } else {
-                // Simple field - convert and set
-                Object convertedValue = DataHelper_I.convertType(value, fieldType);
-                setPropertyByName(fieldName, convertedValue);
+        for (var fieldName : fieldNames()) {
+            if (doc.has(fieldName)) {
+                MapReads.readField(this, fieldName, doc.get(fieldName), ArcadeMapReads.CONTEXT);
             }
         }
 
@@ -232,10 +124,10 @@ public interface ArcadeDoc_I<E extends ArcadeDoc_I<E>>
     }
 
     /**
-     * Populate this object from a Map.
-     * Similar to fromArcadeDocument but works with plain Maps.
+     * Populate this object from a plain map, capturing {@code @rid} if the map carries it (a
+     * projected sub-object does). Otherwise identical to {@link #fromArcadeDocument}.
      *
-     * @param map the map to read from
+     * @param map the map to read from; {@code null} is a no-op
      * @return this object for fluent chaining
      */
     @SuppressWarnings("unchecked")
@@ -244,107 +136,23 @@ public interface ArcadeDoc_I<E extends ArcadeDoc_I<E>>
             return (E) this;
         }
 
-        // Capture identity if the map carries it (e.g. a projected sub-object's @rid).
-        final Object __rid = map.get("@rid");
+        final var __rid = map.get("@rid");
         if (__rid != null) {
             $rid(__rid.toString());
         }
 
-        for (String fieldName : fieldNames()) {
-            if (!map.containsKey(fieldName)) {
-                continue;
-            }
+        return MapReads.read((E) this, map, ArcadeMapReads.CONTEXT);
+    }
 
-            Object value = map.get(fieldName);
-            if (value == null) {
-                continue;
-            }
-
-            Class<?> fieldType = getPropertyType(fieldName);
-            if (fieldType == null) {
-                continue;
-            }
-
-            if (isLinkField(fieldName)) {
-                setPropertyByName(fieldName, toLink(fieldName, value));
-            } else if (isLinkListField(fieldName) && value instanceof List) {
-                List<Link<?>> ls = new ArrayList<>();
-                for (Object item : (List<?>) value) {
-                    ls.add(toLink(fieldName, item));
-                }
-                setPropertyByName(fieldName, new LinkList(ls));
-            } else if (isLinkMapField(fieldName) && value instanceof Map) {
-                Class<?> keyType = linkKeyType(fieldName);
-                Map<Object, Link<?>> lm = new LinkedHashMap<>();
-                for (Map.Entry<?, ?> e : ((Map<?, ?>) value).entrySet()) {
-                    lm.put(DataHelper_I.convertType(e.getKey(), keyType), toLink(fieldName, e.getValue()));
-                }
-                setPropertyByName(fieldName, new LinkMap(lm));
-            } else if (isEnumField(fieldName) && value instanceof String storedValue) {
-                // Enum field (Phase 1, PRP-28) — see fromArcadeDocument for the rationale.
-                setPropertyByName(fieldName, resolveEnumFromStorage(fieldName, storedValue));
-            } else if (isNestedObjectField(fieldName)) {
-                // Nested DataHelper object
-                if (value instanceof Map) {
-                    DataHelper_I<?> nested = createNestedObject(fieldName);
-                    if (nested instanceof ArcadeDoc_I) {
-                        ((ArcadeDoc_I<?>) nested).fromArcadeMap((Map<String, Object>) value);
-                        setPropertyByName(fieldName, nested);
-                    }
-                }
-            } else if (isListField(fieldName) && value instanceof List) {
-                // List field
-                List<?> sourceList = (List<?>) value;
-                List<Object> targetList = new ArrayList<>();
-
-                for (Object item : sourceList) {
-                    if (item instanceof Map) {
-                        DataHelper_I<?> listElement = createListElement(fieldName);
-                        if (listElement instanceof ArcadeDoc_I) {
-                            ((ArcadeDoc_I<?>) listElement).fromArcadeMap((Map<String, Object>) item);
-                            targetList.add(listElement);
-                        } else {
-                            targetList.add(item);
-                        }
-                    } else {
-                        targetList.add(item);
-                    }
-                }
-                setPropertyByName(fieldName, targetList);
-            } else if (isMapField(fieldName) && value instanceof Map) {
-                // Map field
-                Map<?, ?> sourceMap = (Map<?, ?>) value;
-                Map<Object, Object> targetMap = (Map<Object, Object>) createMapInstance(fieldName);
-
-                Class<?> keyType = getMapKeyType(fieldName);
-                Class<?> valueType = getMapValueType(fieldName);
-
-                for (Map.Entry<?, ?> entry : sourceMap.entrySet()) {
-                    Object key = DataHelper_I.convertType(entry.getKey(), keyType);
-                    Object mapValue = entry.getValue();
-
-                    if (isMapValueDataHelper(fieldName) && mapValue instanceof Map) {
-                        DataHelper_I<?> mapValueElement = createMapValueElement(fieldName);
-                        if (mapValueElement instanceof ArcadeDoc_I) {
-                            ((ArcadeDoc_I<?>) mapValueElement).fromArcadeMap((Map<String, Object>) mapValue);
-                            targetMap.put(key, mapValueElement);
-                        } else {
-                            targetMap.put(key, mapValue);
-                        }
-                    } else {
-                        Object convertedValue = DataHelper_I.convertType(mapValue, valueType);
-                        targetMap.put(key, convertedValue);
-                    }
-                }
-                setPropertyByName(fieldName, targetMap);
-            } else {
-                // Simple field - convert and set
-                Object convertedValue = DataHelper_I.convertType(value, fieldType);
-                setPropertyByName(fieldName, convertedValue);
-            }
-        }
-
-        return (E) this;
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Overridden so a map read through the generic entry point still uses ArcadeDB's context:
+     * without this, references would be read as plain values and lost.</p>
+     */
+    @Override
+    default E fromMap(Map<String, Object> map) {
+        return fromArcadeMap(map);
     }
 
     /**
@@ -419,19 +227,6 @@ public interface ArcadeDoc_I<E extends ArcadeDoc_I<E>>
     default <X extends ArcadeDoc_I<X>> LinkList<X> $both(Database db, Supplier<X> factory, Class<?>... edgeTypes) {
         return ArcadeReads.adjacency(db, $rid(), Vertex.DIRECTION.BOTH, factory, edgeTypes);
     }
-
-    // ========== Enum field support (Phase 1, PRP-28) — overridden by generated _A ==========
-
-    /** True if the property is an enum-typed field with a declared {@code @AsUuid}/{@code @AsName} encoding. */
-    default boolean isEnumField(String propertyName) { return false; }
-
-    /**
-     * Resolve a stored String (a uuid or a name, per the field's enum) back to its constant.
-     * Never throws: an id matching no constant means the row is newer than this build, not that it
-     * is corrupt, so {@code null} is returned. Default no-op; generated {@code _A} classes with enum
-     * fields override with a real, reflection-free lookup.
-     */
-    default Object resolveEnumFromStorage(String propertyName, String storedValue) { return null; }
 
     // ========== Reference (LINK) metadata — overridden by generated _A ==========
 

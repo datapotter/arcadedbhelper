@@ -38,6 +38,20 @@ new Person().fromArcadeDocument(doc);
 
 Nested DataHelper DTOs, `List<DTO>`, and `Map<K,DTO>` (de)serialize recursively, the same as the JSON trait — `fromArcadeDocument` / `fromArcadeMap` walk them via the reflection-free accessors.
 
+### Enum-valued properties
+
+An enum field, or a `List` of one, is stored as `STRING` / a `LIST` of them, in whichever form the enum declares — see [Enums](../README.md#enums--asuuid--asname) in the root README for `@AsUuid` / `@AsName`.
+
+```java
+@ArcadeData
+public final class Ticket extends Ticket_A {
+    Outcome outcome;                 // -> STRING, holding Outcome.uuid()
+    List<Severity> severities;       // -> LIST of Severity.name()
+}
+```
+
+ArcadeDB has no notion of a Java enum, so this backend adds one rule of its own: **an enum whose type carries neither annotation cannot be a property here**, and says so at compile time rather than storing a `toString()` nobody can read back. The substitution happens on every write path and in the query DSL alike, so `eq($outcome, Outcome.FAVOURABLE)` and `whereEq($caseCode, CaseCode.BETA)` — including as an indexed lookup key — compare against the stored string, and a value in storage matching no constant resolves to `null` (or, in a list, is dropped) instead of throwing.
+
 ## Typed reads and writes
 
 Both sides of the API are typed, so neither a type name nor a field name appears as a string, and field and value are bound by the generic signature — `eq($size, "big")` against a `Long` column is a compile error, not a query that silently matches nothing.

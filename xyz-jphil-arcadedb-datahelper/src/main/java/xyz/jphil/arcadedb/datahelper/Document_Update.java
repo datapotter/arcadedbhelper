@@ -8,6 +8,7 @@ import com.arcadedb.schema.Type;
 import xyz.jphil.datahelper.DataHelper_I;
 import xyz.jphil.datahelper.Field_I;
 import xyz.jphil.datahelper.HasUuid;
+import xyz.jphil.datahelper.MapWrites;
 
 import java.util.*;
 import java.util.function.Supplier;
@@ -357,7 +358,7 @@ public class Document_Update {
                     if (item instanceof DataHelper_I) {
                         convertedList.add(dataHelperToMap((DataHelper_I<?>) item));
                     } else {
-                        convertedList.add(item);
+                        convertedList.add(HasUuid.storageValue(item));
                     }
                 }
 
@@ -373,7 +374,7 @@ public class Document_Update {
                     if (mapValue instanceof DataHelper_I) {
                         convertedMap.put(entry.getKey(), dataHelperToMap((DataHelper_I<?>) mapValue));
                     } else {
-                        convertedMap.put(entry.getKey(), mapValue);
+                        convertedMap.put(entry.getKey(), HasUuid.storageValue(mapValue));
                     }
                 }
 
@@ -387,62 +388,18 @@ public class Document_Update {
     }
 
     /**
-     * Convert a DataHelper_I object to a Map for serialization.
+     * Convert a DataHelper object to a Map for serialization.
+     *
+     * <p>The conversion is generic — nested blocks, lists and maps of them, enum values — so it
+     * lives in {@code base} as {@link MapWrites}, where a {@code @Data} type can round-trip through
+     * a plain map with no database involved. This remains the call site the LIST and MAP branches
+     * above use.</p>
      *
      * @param dataHelper the DataHelper object
      * @return a Map representation
      */
     private Map<String, Object> dataHelperToMap(DataHelper_I<?> dataHelper) {
-        Map<String, Object> map = new HashMap<>();
-
-        for (String fieldName : dataHelper.fieldNames()) {
-            Object value = dataHelper.getPropertyByName(fieldName);
-            if (value == null) {
-                continue;
-            }
-
-            if (dataHelper.isNestedObjectField(fieldName) && value instanceof DataHelper_I) {
-                // Recursively convert nested object
-                map.put(fieldName, dataHelperToMap((DataHelper_I<?>) value));
-
-            } else if (dataHelper.isListField(fieldName) && value instanceof List) {
-                // Convert list elements
-                List<?> list = (List<?>) value;
-                List<Object> convertedList = new ArrayList<>();
-
-                for (Object item : list) {
-                    if (item instanceof DataHelper_I) {
-                        convertedList.add(dataHelperToMap((DataHelper_I<?>) item));
-                    } else {
-                        convertedList.add(item);
-                    }
-                }
-
-                map.put(fieldName, convertedList);
-
-            } else if (dataHelper.isMapField(fieldName) && value instanceof Map) {
-                // Convert map values
-                Map<?, ?> sourceMap = (Map<?, ?>) value;
-                Map<Object, Object> convertedMap = new HashMap<>();
-
-                for (Map.Entry<?, ?> entry : sourceMap.entrySet()) {
-                    Object mapValue = entry.getValue();
-                    if (mapValue instanceof DataHelper_I) {
-                        convertedMap.put(entry.getKey(), dataHelperToMap((DataHelper_I<?>) mapValue));
-                    } else {
-                        convertedMap.put(entry.getKey(), mapValue);
-                    }
-                }
-
-                map.put(fieldName, convertedMap);
-
-            } else {
-                // Regular field (enum-aware; see HasUuid.storageValue)
-                map.put(fieldName, HasUuid.storageValue(value));
-            }
-        }
-
-        return map;
+        return MapWrites.toMap(dataHelper);
     }
 
     /**
