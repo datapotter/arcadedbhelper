@@ -27,7 +27,7 @@ If you need **none** of those, plain Java or Lombok is simpler — don't reach f
 Keep the two `@Data` annotations straight — disambiguate by import:
 
 - `lombok.Data` — Lombok's; writes accessors. `@DataHelper` generates the interface split `Xxx_IR` (readable) + `Xxx_I` (read+write) — symbols + *abstract* accessor declarations + property accessors — plus the immutable record `Xxx_R`, so it **needs** Lombok (or hand-written getters/setters) to supply the accessor bodies on the mutable class. This is the "with Lombok" pairing.
-- `xyz.jphil.datahelper.Data` — DataHelper's own; generates the same `Xxx_IR`/`Xxx_I`/`Xxx_R` plus a self-contained sealed `Xxx_A` parent that writes the accessor bodies (delegating to the child) **and** `equals`/`hashCode`/`toString`; the property/fluent methods and `toRecord()` are inherited from the generated interfaces. Used alone, **no Lombok**.
+- `datapotter.datahelper.Data` — DataHelper's own; generates the same `Xxx_IR`/`Xxx_I`/`Xxx_R` plus a self-contained sealed `Xxx_A` parent that writes the accessor bodies (delegating to the child) **and** `equals`/`hashCode`/`toString`; the property/fluent methods and `toRecord()` are inherited from the generated interfaces. Used alone, **no Lombok**.
 
 Both paths expose the identical symbol + property-accessor API.
 
@@ -47,13 +47,13 @@ Both paths expose the identical symbol + property-accessor API.
 ```xml
 <dependencies>
   <dependency>
-    <groupId>io.github.xyz-jphil</groupId>
-    <artifactId>xyz-jphil-datahelper-base</artifactId>
+    <groupId>io.github.datapotter</groupId>
+    <artifactId>datapotter-datahelper-base</artifactId>
     <version>1.0</version>
   </dependency>
   <dependency>
-    <groupId>io.github.xyz-jphil</groupId>
-    <artifactId>xyz-jphil-datahelper-annotations</artifactId>
+    <groupId>io.github.datapotter</groupId>
+    <artifactId>datapotter-datahelper-annotations</artifactId>
     <version>1.0</version>
   </dependency>
 </dependencies>
@@ -64,8 +64,8 @@ Both paths expose the identical symbol + property-accessor API.
   <configuration>
     <annotationProcessorPaths>
       <path>
-        <groupId>io.github.xyz-jphil</groupId>
-        <artifactId>xyz-jphil-datahelper-processor</artifactId>
+        <groupId>io.github.datapotter</groupId>
+        <artifactId>datapotter-datahelper-processor</artifactId>
         <version>1.0</version>
       </path>
       <!-- add the lombok path here too, only if using @DataHelper mode -->
@@ -74,14 +74,14 @@ Both paths expose the identical symbol + property-accessor API.
 </plugin></plugins></build>
 ```
 
-Optional: `xyz-jphil-datahelper-json` (JSON trait, JVM-only). The generated source appears under `target/generated-sources/annotations`.
+Optional: `datapotter-datahelper-json` (JSON trait, JVM-only). The generated source appears under `target/generated-sources/annotations`.
 
 ## Usage — no Lombok (DataHelper's `@Data`)
 
 Recommended when Lombok is not available. The class must be `final`, extend the generated `Xxx_A`, and declare **package-private** fields (no modifier) — the sealed parent delegates to them.
 
 ```java
-import xyz.jphil.datahelper.Data;   // DataHelper's @Data — NOT lombok.Data
+import datapotter.datahelper.Data;   // DataHelper's @Data — NOT lombok.Data
 
 @Data
 public final class Person extends Person_A {   // Person_A is generated
@@ -107,8 +107,8 @@ Person.FIELDS.forEach(f -> ...);               // iterate all field symbols
 Use when Lombok is already on the classpath. Lombok writes the accessors; DataHelper generates the `Xxx_I` interface the class implements.
 
 ```java
-import lombok.Data;                          // Lombok's @Data — NOT xyz.jphil.datahelper.Data
-import xyz.jphil.datahelper.DataHelper;
+import lombok.Data;                          // Lombok's @Data — NOT datapotter.datahelper.Data
+import datapotter.datahelper.DataHelper;
 
 @DataHelper
 @Data                                        // Lombok (or @Getter @Setter) — supplies the accessor bodies
@@ -125,7 +125,7 @@ Same API as above (`$name`, `FIELDS`, `name()`, `getPropertyByName(...)`, …). 
 
 ## JSON serialization
 
-Add the `xyz-jphil-datahelper-json` dependency. No reflection, no external JSON library. The trait is split: `Json_IR` is the read side (`toJson`), `Json_I extends Json_IR` adds the write side (`fromJson`).
+Add the `datapotter-datahelper-json` dependency. No reflection, no external JSON library. The trait is split: `Json_IR` is the read side (`toJson`), `Json_I extends Json_IR` adds the write side (`fromJson`).
 
 ```java
 // Mutable only — add the full trait to the implements clause:
@@ -315,14 +315,14 @@ The only genuine record-builder-only things, both minor: a **staged builder**'s 
 
 ## Modules
 
-All under group `io.github.xyz-jphil`:
+All under group `io.github.datapotter`:
 
-- `xyz-jphil-datahelper-base` — runtime: `DataHelper_IR` (readable) / `DataHelper_I` (read+write), `Field`/`Field_I`, `convertType`.
-- `xyz-jphil-datahelper-annotations` — `@DataHelper`, `@Data`.
-- `xyz-jphil-datahelper-processor` — annotation processor (handles both annotations); generates `_IR`/`_I`/`_R` (+`_A` for `@Data`); goes on `annotationProcessorPaths` only.
-- `xyz-jphil-datahelper-json` — optional JSON trait (JVM): `Json_IR` (`toJson`, read) / `Json_I` (`fromJson`, write).
-- `xyz-jphil-arcadedb-datahelper` — optional ArcadeDB persistence trait + `@ArcadeData` (separate module; see its README).
+- `datapotter-datahelper-base` — runtime: `DataHelper_IR` (readable) / `DataHelper_I` (read+write), `Field`/`Field_I`, `convertType`.
+- `datapotter-datahelper-annotations` — `@DataHelper`, `@Data`.
+- `datapotter-datahelper-processor` — annotation processor (handles both annotations); generates `_IR`/`_I`/`_R` (+`_A` for `@Data`); goes on `annotationProcessorPaths` only.
+- `datapotter-datahelper-json` — optional JSON trait (JVM): `Json_IR` (`toJson`, read) / `Json_I` (`fromJson`, write).
+- `datapotter-arcadedbhelper` — optional ArcadeDB persistence trait + `@ArcadeData` (separate module; see its README).
 
 ## ArcadeDB integration
 
-The optional `xyz-jphil-arcadedb-datahelper` module adds an `@ArcadeData` annotation and an `ArcadeDoc_I` trait for persisting DataHelper DTOs to [ArcadeDB](https://arcadedb.com) — schema generation, an instance-level upsert/insert DSL, and document (de)serialization. See that **module's own README** for usage, and `project-journals/aracde_db_context/arcade-db-working-examples-2026-07-31.md` for the complete worked tutorial.
+The optional `datapotter-arcadedbhelper` module adds an `@ArcadeData` annotation and an `ArcadeDoc_I` trait for persisting DataHelper DTOs to [ArcadeDB](https://arcadedb.com) — schema generation, an instance-level upsert/insert DSL, and document (de)serialization. See that **module's own README** for usage, and `project-journals/aracde_db_context/arcade-db-working-examples-2026-07-31.md` for the complete worked tutorial.

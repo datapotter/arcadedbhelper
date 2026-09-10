@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>io.github.datapotter</groupId>
+    <artifactId>datapotter-arcadedbhelper-processor</artifactId>
+    <!--
+      1.3 — PRP-30: the "enum needs @AsUuid or @AsName" rule now also covers a List<E> field, and
+        names the ELEMENT enum in the message rather than the field's declared type. Recut against
+        processor 1.3 / arcadedb-datahelper 1.7 / base 1.3, which is where the list codegen and the
+        isEnumListField it overrides live.
+      1.2 — PRP-29: no source change; recut against processor 1.2 and arcadedb-datahelper 1.6, so a
+        consumer resolving this processor alone gets the @Data-path enum generation and the base 1.2
+        placement of isEnumField/resolveEnumFromStorage that the generated @Override now targets.
+      1.1 — enum support (PRP-28 phase 1): enforces that a field's enum type carries @AsUuid or
+        @AsName (a backend-specific rule — "cannot store an enum" is a fact about ArcadeDB, not a
+        universal one), and generates, per enum-typed field, a reflection-free static
+        Map<String,EnumType> (built from EnumType.values(), never getEnumConstants()) plus the
+        isEnumField/resolveEnumFromStorage overrides. Additive; no change to non-enum codegen.
+    -->
+    <version>1.3</version>
+    <packaging>jar</packaging>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <!-- Shared processor utilities -->
+        <dependency>
+            <groupId>io.github.datapotter</groupId>
+            <artifactId>datapotter-datahelper-processor</artifactId>
+            <version>1.3</version>
+        </dependency>
+
+        <!-- ArcadeDB DataHelper annotations and base -->
+        <dependency>
+            <groupId>io.github.datapotter</groupId>
+            <artifactId>datapotter-arcadedbhelper</artifactId>
+            <version>1.7</version>
+        </dependency>
+
+        <!-- Base DataHelper (for DataHelper_I interface) -->
+        <dependency>
+            <groupId>io.github.datapotter</groupId>
+            <artifactId>datapotter-datahelper-base</artifactId>
+            <version>1.3</version>
+        </dependency>
+
+        <!-- Code generation (Palantir fork with sealed class support) -->
+        <dependency>
+            <groupId>com.palantir.javapoet</groupId>
+            <artifactId>javapoet</artifactId>
+            <version>0.10.0</version>
+        </dependency>
+
+        <!-- Annotation processing -->
+        <dependency>
+            <groupId>com.google.auto.service</groupId>
+            <artifactId>auto-service</artifactId>
+            <version>1.1.1</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>21</source>
+                    <target>21</target>
+                    <!-- DO NOT disable annotation processing - we need @AutoService to work! -->
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
