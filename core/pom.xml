@@ -100,7 +100,7 @@
         (an @AsUuid constant would have silently stored its name instead of its uuid); fixed here as
         part of closing this gap. Additive; no schema-property-type change for non-enum fields.
     -->
-    <version>1.7</version>
+    <version>1.8-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>DataPotter ArcadeDbHelper</name>
