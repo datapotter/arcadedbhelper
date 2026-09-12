@@ -9,8 +9,14 @@ import com.arcadedb.query.select.SelectIterator;
 import com.arcadedb.query.select.SelectWhereAfterBlock;
 import com.arcadedb.query.select.SelectWhereLeftBlock;
 import datapotter.datahelper.DataField;
+import datapotter.datahelper.EnumField;
+import datapotter.datahelper.EnumListField;
+import datapotter.datahelper.Field;
 import datapotter.datahelper.Field_I;
 import datapotter.datahelper.HasUuid;
+import datapotter.datahelper.LinkField;
+import datapotter.datahelper.LinkListField;
+import datapotter.datahelper.LinkMapField;
 import datapotter.datahelper.ListDataField;
 import datapotter.datahelper.MapDataField;
 
@@ -411,8 +417,28 @@ public final class Query<E extends ArcadeDoc_I<E>> implements Iterable<E> {
         }
     }
 
+    /**
+     * Exhaustive over the sealed {@link Field_I} rather than a test for the three nested shapes, so
+     * a new descriptor cannot quietly default to filterable. Every {@code false} here is a claim
+     * that the engine can evaluate the field with a flat {@code record.get()} — true of a RID and
+     * true of an enum, which crosses the boundary as one string.
+     */
+    private boolean isNested(Field_I<E, ?> field) {
+        return switch (field) {
+            case DataField<?, ?> dataField -> true;
+            case ListDataField<?, ?> listField -> true;
+            case MapDataField<?, ?, ?> mapField -> true;
+            case LinkField<?, ?> linkField -> false;
+            case LinkListField<?, ?> linkList -> false;
+            case LinkMapField<?, ?, ?> linkMap -> false;
+            case EnumField<?, ?> enumField -> false;
+            case EnumListField<?, ?> enumListField -> false;
+            case Field<?, ?> plain -> false;
+        };
+    }
+
     private void rejectNested(Field_I<E, ?> field) {
-        if (field instanceof DataField || field instanceof ListDataField || field instanceof MapDataField) {
+        if (isNested(field)) {
             throw new IllegalArgumentException(
                     "Cannot filter on '" + field.name() + "': it is a nested/embedded field, and the "
                     + "engine's executor re-reads candidates with a flat record.get(), so the query "

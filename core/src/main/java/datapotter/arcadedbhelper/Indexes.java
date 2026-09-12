@@ -93,6 +93,43 @@ public final class Indexes {
         return dropped;
     }
 
+    /**
+     * The shape of every index on a type, read off the live indexes.
+     *
+     * <p>Pairs with {@link #restore}. Unlike {@link #rebuild}, which recreates from the DECLARED schema
+     * via {@link InitDoc}, this needs no {@link TypeDef} — so it works for a type this code did not
+     * declare, and for {@link Rename}, which has to put back exactly what was there rather than what a
+     * declaration says should be.
+     */
+    public static List<IndexDef> capture(Database db, String typeName) {
+        var out = new ArrayList<IndexDef>();
+        var schema = db.getSchema();
+        if (!schema.existsType(typeName)) return out;
+        for (Index index : schema.getType(typeName).getAllIndexes(false)) out.add(IndexDef.of(index));
+        return out;
+    }
+
+    /**
+     * Build captured indexes back onto a type, skipping any that are already there.
+     *
+     * <p>Skipping matters: after a failed rename the type may still carry an index the schema believes
+     * in, and {@code createTypeIndex} treats that as an error rather than a no-op.
+     *
+     * @return how many were actually created
+     */
+    public static int restore(Database db, String typeName, List<IndexDef> defs) {
+        var schema = db.getSchema();
+        if (!schema.existsType(typeName)) return 0;
+        var type = schema.getType(typeName);
+        var created = 0;
+        for (var def : defs)
+            if (type.getIndexByProperties(def.properties().toArray(String[]::new)) == null) {
+                def.createOn(db, typeName);
+                created++;
+            }
+        return created;
+    }
+
     /** Drop every index on one type, by name. Returns how many went. */
     public static int drop(Database db, String typeName) {
         var schema = db.getSchema();

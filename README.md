@@ -49,12 +49,12 @@ Both paths expose the identical symbol + property-accessor API.
   <dependency>
     <groupId>io.github.datapotter</groupId>
     <artifactId>datapotter-datahelper-base</artifactId>
-    <version>1.0</version>
+    <version>2.0</version>
   </dependency>
   <dependency>
     <groupId>io.github.datapotter</groupId>
     <artifactId>datapotter-datahelper-annotations</artifactId>
-    <version>1.0</version>
+    <version>2.0</version>
   </dependency>
 </dependencies>
 
@@ -66,13 +66,17 @@ Both paths expose the identical symbol + property-accessor API.
       <path>
         <groupId>io.github.datapotter</groupId>
         <artifactId>datapotter-datahelper-processor</artifactId>
-        <version>1.0</version>
+        <version>2.0</version>
       </path>
       <!-- add the lombok path here too, only if using @DataHelper mode -->
     </annotationProcessorPaths>
   </configuration>
 </plugin></plugins></build>
 ```
+
+> **2.0 is not yet on Maven Central.** It is built and installed locally as `2.0-SNAPSHOT`; the last published line is 1.x, where the four modules carried independent versions. Everything documented below describes 2.0.
+
+**One version for all four modules from 2.0 onward.** `annotations`, `base`, `json` and `processor` are built together by `datahelper/pom.xml` and released together, because generated code does not compile against an older `base` — the 1.x matrix described combinations that were never going to work. The ArcadeDB modules are a **separate** reactor on their own version line; they consume this one, not the other way round.
 
 Optional: `datapotter-datahelper-json` (JSON trait, JVM-only). The generated source appears under `target/generated-sources/annotations`.
 
@@ -210,6 +214,46 @@ Why the storage form is declared rather than inferred from `implements HasUuid`:
 
 Resolution never throws. A stored string matching no constant means the row was written by newer code, not that it is corrupt: a single field resolves to `null`, and an element of a list is dropped, so the list a caller receives holds exactly the constants this build can name.
 
+Both annotations are `CLASS`-retained, deliberately. Under `SOURCE` retention they are absent from the class file, so an entity compiled against a **jar** of enums would read no annotation, fall back to storing `name()`, and write the wrong identity with a green build. `CLASS` costs nothing at runtime and makes the declaration mean the same thing on both sides of a module boundary.
+
+## `@EnumData` — the `@Data` idea for an enum
+
+`@Data` hangs accessors on a generated base class the type extends. An enum already extends `Enum`, so `@EnumData` puts them on a generated **sealed interface** instead, one `default` accessor per instance field:
+
+```java
+@AsUuid(BASE64URL)
+@EnumData(traits = Described.class)
+public enum OrderCoverage implements OrderCoverage_I {
+    NONE("N-40v1pMekz01Qdm7NFXiA", "No order file in hand."),
+    ORDER_HELD("atHGV0wnvUKZaRe7JTDoAw", "An order file is in hand.", "2018 SLP 4774");
+
+    final String uuid, description;          // package-private: an interface default reads them
+    final List<String> examples;
+    OrderCoverage(String uuid, String description, String... examples) {
+        this.uuid = uuid; this.description = description; this.examples = List.of(examples);
+    }
+}
+```
+
+There is no `uuid()`, no `description()`, no `examples()` to write — and **no `self()` either**. Because `OrderCoverage_I` is sealed permitting only `OrderCoverage`, the generated interface supplies `default OrderCoverage self() { return (OrderCoverage) this; }` itself, a cast the seal makes total. The enum also stops naming `HasUuid`: `@AsUuid` puts it on the generated interface.
+
+Two requirements, and one choice:
+
+- **Fields must not be `private`** — an interface default in the same package reads them directly. The same rule `@Data` places on a child class's fields.
+- **`traits` names hand-written interfaces the generated one must extend**, so the generated accessors satisfy their abstract methods. They have to land there: a `default` on `Foo_I` does not implement an abstract method of an interface `Foo_I` knows nothing about, and javac rejects the enum for not overriding it.
+- **Where a trait clashes with nothing, both forms compile** and it is a design choice:
+
+  ```java
+  @EnumData                          enum Foo implements Foo_I, Vocab   // shorter
+  @EnumData(traits = Vocab.class)    enum Foo implements Foo_I          // sturdier
+  ```
+
+  The short form holds only while nothing the trait declares is override-equivalent with a generated accessor. Add a colliding field later — an `aliases` field under a `Vocab` that defaults `aliases()` — and it stops compiling with *"inherits unrelated defaults"*, a message that does not name the fix. Prefer `traits` where such an edit is expected, or where other enums in the package need it anyway and one uniform shape is worth more than 18 characters.
+
+Where a storage form is declared, the interface also gets `Foo_I.fromStorage(String)` — the reverse of `HasUuid.storageValue` on write, and the reason a consumer never has to know whether the enum stores a uuid or a name. **No id literal is ever written into generated code**: the index is built from `values()` and `c.uuid()`, so the enum source stays the only place an id exists. It lives in a lazily-initialised nested holder, because a `Map` field on the interface itself is initialised by the *enum's* class init and would read `values()` back as `null`.
+
+`@EnumData` is opt-in and additive. An enum carrying only `@AsUuid`/`@AsName` behaves exactly as before, hand-written accessors and all, and the two forms mix freely inside one entity.
+
 ## Reflection-free dynamic access
 
 This is the distinguishing feature, and it's easy to undersell. Every generated type implements the readable contract `DataHelper_IR` (mutable types add the write side `DataHelper_I`), all backed by a generated `switch` — **no reflection**. So a generic helper written **once** works for *every* DTO **and** runs where reflection doesn't: TeaVM (Java→JS in the browser) and GraalVM native images.
@@ -317,7 +361,7 @@ The only genuine record-builder-only things, both minor: a **staged builder**'s 
 
 All under group `io.github.datapotter`:
 
-- `datapotter-datahelper-base` — runtime: `DataHelper_IR` (readable) / `DataHelper_I` (read+write), `Field`/`Field_I`, `convertType`.
+- `datapotter-datahelper-base` — runtime: `DataHelper_IR` (readable) / `DataHelper_I` (read+write), `EnumData_I` (the `self()` root for `@EnumData`), the sealed `Field_I` descriptor family (`Field`, `DataField`, `ListDataField`, `MapDataField`, `LinkField`, `LinkListField`, `LinkMapField`, `EnumField`, `EnumListField`), `convertType`.
 - `datapotter-datahelper-annotations` — `@DataHelper`, `@Data`.
 - `datapotter-datahelper-processor` — annotation processor (handles both annotations); generates `_IR`/`_I`/`_R` (+`_A` for `@Data`); goes on `annotationProcessorPaths` only.
 - `datapotter-datahelper-json` — optional JSON trait (JVM): `Json_IR` (`toJson`, read) / `Json_I` (`fromJson`, write).

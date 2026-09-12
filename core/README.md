@@ -207,18 +207,22 @@ Same traversal, same results; it just avoids building a DTO purely to read its R
 <dependency>
     <groupId>io.github.datapotter</groupId>
     <artifactId>datapotter-arcadedbhelper</artifactId>
-    <version>1.4</version>
+    <version>2.0</version>
 </dependency>
 ```
 
-> **Use 1.2 or later with ArcadeDB 26.x.** 26.x removed the `RID(BasicDatabase, …)` constructors in favour of static `RID.create(…)`. 1.0 still calls the removed form, so it compiles against 26.x and then throws `NoSuchMethodError` the moment the line runs — which silently disables every `Link<T>` resolve, every `Link`/`LinkList`/`LinkMap` write, and all of `$out`/`$in`/`$both`, while the schema and every scalar field keep working. 1.1 fixed that and made record creation dispatch to `newVertex` for `@ArcadeData(type = VERTEX)` types (so the instance DSL covers vertices); 1.2 adds the typed field-level `Upsert`; 1.3 adds `Query` (typed, lazy reads) and `Traverse` (adjacency from a held `Vertex`), plus `TypeDef.factory(X::new)`; 1.4 adds `Delete`, `Indexes` (bulk-change window and index repair) and `Query.skippingUnreadable()` — see the deleting section above, which is worth reading before removing rows in bulk. The processor artifact below stays at `1.0`.
+> **2.0 is not yet on Maven Central** — built and installed locally as `2.0-SNAPSHOT`. From 2.0 the two ArcadeDB modules share one version, built by `arcadedbhelper/pom.xml`, and consume the datahelper core through a single `${datahelper.version}` property. They are a **separate reactor** from datahelper on purpose: this is one backend over that core, the dependency has only ever run one way, and the two lines moved independently through 1.x (this reached 1.8 while `datahelper-annotations` reached 1.2). They happen to start aligned at 2.0 because this is the release that consumes datahelper 2.0; they are free to diverge afterwards.
+
+> **What 2.0 changes here.** An enum-valued field's symbol is now `EnumField`/`EnumListField` rather than a plain `Field`, and it carries its own resolver — so a generated entity no longer holds a private `Map` plus a builder method per enum field, and `resolveEnumFromStorage` is uniformly `case "x" -> $x.fromStorage(v)`. The stored shape is unchanged, so **no data migration**: an enum is still one `STRING` column and a list of them still a `LIST` of the same strings. Internally the three places that dispatch over the sealed `Field_I` are now exhaustive `switch`es rather than `instanceof` chains, so a descriptor added to that family fails to compile until each site decides what it means.
+
+> **Use 1.2 or later with ArcadeDB 26.x.** 26.x removed the `RID(BasicDatabase, …)` constructors in favour of static `RID.create(…)`. 1.0 still calls the removed form, so it compiles against 26.x and then throws `NoSuchMethodError` the moment the line runs — which silently disables every `Link<T>` resolve, every `Link`/`LinkList`/`LinkMap` write, and all of `$out`/`$in`/`$both`, while the schema and every scalar field keep working. 1.1 fixed that and made record creation dispatch to `newVertex` for `@ArcadeData(type = VERTEX)` types (so the instance DSL covers vertices); 1.2 adds the typed field-level `Upsert`; 1.3 adds `Query` (typed, lazy reads) and `Traverse` (adjacency from a held `Vertex`), plus `TypeDef.factory(X::new)`; 1.4 adds `Delete`, `Indexes` (bulk-change window and index repair) and `Query.skippingUnreadable()` — see the deleting section above, which is worth reading before removing rows in bulk. From 2.0 the processor artifact below carries the same version as this one.
 
 ```xml
 <annotationProcessorPaths>
     <path>
         <groupId>io.github.datapotter</groupId>
         <artifactId>datapotter-arcadedbhelper-processor</artifactId>
-        <version>1.0</version>
+        <version>2.0</version>
     </path>
 </annotationProcessorPaths>
 ```

@@ -9,6 +9,9 @@ import java.util.*;
 import datapotter.datahelper.DataHelper_I;
 import datapotter.datahelper.Field_I;
 import datapotter.datahelper.DataField;
+import datapotter.datahelper.EnumField;
+import datapotter.datahelper.EnumListField;
+import datapotter.datahelper.Field;
 import datapotter.datahelper.LinkField;
 import datapotter.datahelper.LinkListField;
 import datapotter.datahelper.LinkMapField;
@@ -127,76 +130,82 @@ public class InitDoc {
         }
 
         // Process all fields to find embedded types
+        // Exhaustive over the sealed Field_I: no default, so a new descriptor added to that
+        // hierarchy fails to compile HERE until somebody decides whether it carries a dependency.
+        // That is the whole reason the hierarchy is sealed, and an instanceof chain with a silent
+        // fall-through gave it away.
         for (Field_I<?, ?> field : fields) {
-            if (field instanceof DataField) {
-                // Nested DataHelper object
-                DataField<?, ?> dataField = (DataField<?, ?>) field;
-                Class<?> nestedType = dataField.type();
-                @SuppressWarnings("unchecked")
-                List<Field_I<?, ?>> nestedFields = (List<Field_I<?, ?>>) dataField.nestedFields();
+            switch (field) {
+                case DataField<?, ?> dataField -> {
+                    // Nested DataHelper object
+                    Class<?> nestedType = dataField.type();
+                    @SuppressWarnings("unchecked")
+                    List<Field_I<?, ?>> nestedFields = (List<Field_I<?, ?>>) dataField.nestedFields();
 
-                if (!nestedFields.isEmpty()) {
-                    fieldsMap.put(nestedType, nestedFields);
-                    // Recursively collect nested dependencies first
-                    collectDependencies(nestedType, nestedFields, collected, fieldsMap);
+                    if (!nestedFields.isEmpty()) {
+                        fieldsMap.put(nestedType, nestedFields);
+                        // Recursively collect nested dependencies first
+                        collectDependencies(nestedType, nestedFields, collected, fieldsMap);
+                    }
                 }
+                case ListDataField<?, ?> listField -> {
+                    // List<DataHelper> field
+                    Class<?> elementType = listField.elementType();
+                    @SuppressWarnings("unchecked")
+                    List<Field_I<?, ?>> elementFields = (List<Field_I<?, ?>>) listField.elementFields();
 
-            } else if (field instanceof ListDataField) {
-                // List<DataHelper> field
-                ListDataField<?, ?> listField = (ListDataField<?, ?>) field;
-                Class<?> elementType = listField.elementType();
-                @SuppressWarnings("unchecked")
-                List<Field_I<?, ?>> elementFields = (List<Field_I<?, ?>>) listField.elementFields();
-
-                if (!elementFields.isEmpty()) {
-                    fieldsMap.put(elementType, elementFields);
-                    // Recursively collect element dependencies first
-                    collectDependencies(elementType, elementFields, collected, fieldsMap);
+                    if (!elementFields.isEmpty()) {
+                        fieldsMap.put(elementType, elementFields);
+                        // Recursively collect element dependencies first
+                        collectDependencies(elementType, elementFields, collected, fieldsMap);
+                    }
                 }
+                case MapDataField<?, ?, ?> mapField -> {
+                    // Map<K, DataHelper> field
+                    Class<?> valueType = mapField.valueType();
+                    @SuppressWarnings("unchecked")
+                    List<Field_I<?, ?>> valueFields = (List<Field_I<?, ?>>) mapField.valueFields();
 
-            } else if (field instanceof MapDataField) {
-                // Map<K, DataHelper> field
-                MapDataField<?, ?, ?> mapField = (MapDataField<?, ?, ?>) field;
-                Class<?> valueType = mapField.valueType();
-                @SuppressWarnings("unchecked")
-                List<Field_I<?, ?>> valueFields = (List<Field_I<?, ?>>) mapField.valueFields();
-
-                if (!valueFields.isEmpty()) {
-                    fieldsMap.put(valueType, valueFields);
-                    // Recursively collect value dependencies first
-                    collectDependencies(valueType, valueFields, collected, fieldsMap);
+                    if (!valueFields.isEmpty()) {
+                        fieldsMap.put(valueType, valueFields);
+                        // Recursively collect value dependencies first
+                        collectDependencies(valueType, valueFields, collected, fieldsMap);
+                    }
                 }
-
-            } else if (field instanceof LinkField) {
-                // Reference (LINK) target — a separate record type that must exist before the owner
-                LinkField<?, ?> linkField = (LinkField<?, ?>) field;
-                Class<?> targetType = linkField.type();
-                @SuppressWarnings("unchecked")
-                List<Field_I<?, ?>> targetFields = (List<Field_I<?, ?>>) linkField.targetFields();
-                if (!targetFields.isEmpty()) {
-                    fieldsMap.put(targetType, targetFields);
-                    collectDependencies(targetType, targetFields, collected, fieldsMap);
+                case LinkField<?, ?> linkField -> {
+                    // Reference (LINK) target — a separate record type that must exist before the owner
+                    Class<?> targetType = linkField.type();
+                    @SuppressWarnings("unchecked")
+                    List<Field_I<?, ?>> targetFields = (List<Field_I<?, ?>>) linkField.targetFields();
+                    if (!targetFields.isEmpty()) {
+                        fieldsMap.put(targetType, targetFields);
+                        collectDependencies(targetType, targetFields, collected, fieldsMap);
+                    }
                 }
-
-            } else if (field instanceof LinkListField) {
-                LinkListField<?, ?> linkList = (LinkListField<?, ?>) field;
-                Class<?> elementType = linkList.elementType();
-                @SuppressWarnings("unchecked")
-                List<Field_I<?, ?>> elementFields = (List<Field_I<?, ?>>) linkList.elementFields();
-                if (!elementFields.isEmpty()) {
-                    fieldsMap.put(elementType, elementFields);
-                    collectDependencies(elementType, elementFields, collected, fieldsMap);
+                case LinkListField<?, ?> linkList -> {
+                    Class<?> elementType = linkList.elementType();
+                    @SuppressWarnings("unchecked")
+                    List<Field_I<?, ?>> elementFields = (List<Field_I<?, ?>>) linkList.elementFields();
+                    if (!elementFields.isEmpty()) {
+                        fieldsMap.put(elementType, elementFields);
+                        collectDependencies(elementType, elementFields, collected, fieldsMap);
+                    }
                 }
-
-            } else if (field instanceof LinkMapField) {
-                LinkMapField<?, ?, ?> linkMap = (LinkMapField<?, ?, ?>) field;
-                Class<?> valueType = linkMap.valueType();
-                @SuppressWarnings("unchecked")
-                List<Field_I<?, ?>> valueFields = (List<Field_I<?, ?>>) linkMap.valueFields();
-                if (!valueFields.isEmpty()) {
-                    fieldsMap.put(valueType, valueFields);
-                    collectDependencies(valueType, valueFields, collected, fieldsMap);
+                case LinkMapField<?, ?, ?> linkMap -> {
+                    Class<?> valueType = linkMap.valueType();
+                    @SuppressWarnings("unchecked")
+                    List<Field_I<?, ?>> valueFields = (List<Field_I<?, ?>>) linkMap.valueFields();
+                    if (!valueFields.isEmpty()) {
+                        fieldsMap.put(valueType, valueFields);
+                        collectDependencies(valueType, valueFields, collected, fieldsMap);
+                    }
                 }
+                // A scalar has no record type of its own to register first. An enum is a scalar:
+                // it crosses the boundary as one string (its uuid or its name), so it needs no
+                // schema type, and a list of them needs no element type.
+                case EnumField<?, ?> enumField -> { }
+                case EnumListField<?, ?> enumListField -> { }
+                case Field<?, ?> plain -> { }
             }
         }
 
@@ -315,81 +324,77 @@ public class InitDoc {
             return documentType.getProperty(fieldName);
         }
 
-        Property p;
+        // Exhaustive over the sealed Field_I — see collectDependencies for why there is no default.
+        return switch (field) {
+            case DataField<?, ?> dataField -> {
+                // Embedded DataHelper object
+                String embeddedTypeName = dataField.type().getSimpleName();
 
-        if (field instanceof DataField) {
-            // Embedded DataHelper object
-            DataField<?, ?> dataField = (DataField<?, ?>) field;
-            String embeddedTypeName = dataField.type().getSimpleName();
+                // Ensure embedded type is registered
+                if (!documentType.getSchema().existsType(embeddedTypeName)) {
+                    System.err.println("Warning: Embedded type " + embeddedTypeName +
+                        " not registered. It should have been registered via dependency collection.");
+                }
 
-            // Ensure embedded type is registered
-            if (!documentType.getSchema().existsType(embeddedTypeName)) {
-                System.err.println("Warning: Embedded type " + embeddedTypeName +
-                    " not registered. It should have been registered via dependency collection.");
+                Property p = documentType.createProperty(fieldName, Type.EMBEDDED);
+                p.setOfType(embeddedTypeName);
+                yield p;
             }
+            case ListDataField<?, ?> listField -> {
+                // List<DataHelper> field
+                String elementTypeName = listField.elementType().getSimpleName();
 
-            p = documentType.createProperty(fieldName, Type.EMBEDDED);
-            p.setOfType(embeddedTypeName);
+                // Ensure embedded type is registered
+                if (!documentType.getSchema().existsType(elementTypeName)) {
+                    System.err.println("Warning: List element type " + elementTypeName +
+                        " not registered. It should have been registered via dependency collection.");
+                }
 
-        } else if (field instanceof ListDataField) {
-            // List<DataHelper> field
-            ListDataField<?, ?> listField = (ListDataField<?, ?>) field;
-            String elementTypeName = listField.elementType().getSimpleName();
-
-            // Ensure embedded type is registered
-            if (!documentType.getSchema().existsType(elementTypeName)) {
-                System.err.println("Warning: List element type " + elementTypeName +
-                    " not registered. It should have been registered via dependency collection.");
+                Property p = documentType.createProperty(fieldName, Type.LIST);
+                p.setOfType(elementTypeName);
+                yield p;
             }
+            case MapDataField<?, ?, ?> mapField -> {
+                // Map<K, DataHelper> field
+                String valueTypeName = mapField.valueType().getSimpleName();
 
-            p = documentType.createProperty(fieldName, Type.LIST);
-            p.setOfType(elementTypeName);
+                // Ensure embedded type is registered
+                if (!documentType.getSchema().existsType(valueTypeName)) {
+                    System.err.println("Warning: Map value type " + valueTypeName +
+                        " not registered. It should have been registered via dependency collection.");
+                }
 
-        } else if (field instanceof MapDataField) {
-            // Map<K, DataHelper> field
-            MapDataField<?, ?, ?> mapField = (MapDataField<?, ?, ?>) field;
-            String valueTypeName = mapField.valueType().getSimpleName();
-
-            // Ensure embedded type is registered
-            if (!documentType.getSchema().existsType(valueTypeName)) {
-                System.err.println("Warning: Map value type " + valueTypeName +
-                    " not registered. It should have been registered via dependency collection.");
+                Property p = documentType.createProperty(fieldName, Type.MAP);
+                p.setOfType(valueTypeName);
+                yield p;
             }
-
-            p = documentType.createProperty(fieldName, Type.MAP);
-            p.setOfType(valueTypeName);
-
-        } else if (field instanceof LinkField) {
-            // Reference (LINK) — stores the target's RID; constrain to the target type if registered.
-            LinkField<?, ?> linkField = (LinkField<?, ?>) field;
-            p = documentType.createProperty(fieldName, Type.LINK);
-            String targetTypeName = linkField.type().getSimpleName();
-            if (documentType.getSchema().existsType(targetTypeName)) {
-                p.setOfType(targetTypeName);
+            case LinkField<?, ?> linkField -> {
+                // Reference (LINK) — stores the target's RID; constrain to the target type if registered.
+                Property p = documentType.createProperty(fieldName, Type.LINK);
+                String targetTypeName = linkField.type().getSimpleName();
+                if (documentType.getSchema().existsType(targetTypeName)) {
+                    p.setOfType(targetTypeName);
+                }
+                yield p;
             }
+            // LIST/MAP of references — elements are RIDs (not embedded); left element/value-untyped.
+            case LinkListField<?, ?> linkList -> documentType.createProperty(fieldName, Type.LIST);
+            case LinkMapField<?, ?, ?> linkMap -> documentType.createProperty(fieldName, Type.MAP);
 
-        } else if (field instanceof LinkListField) {
-            // LIST of references — elements are RIDs (not embedded); left element-untyped.
-            p = documentType.createProperty(fieldName, Type.LIST);
-
-        } else if (field instanceof LinkMapField) {
-            // MAP of references — values are RIDs (not embedded); left value-untyped.
-            p = documentType.createProperty(fieldName, Type.MAP);
-
-        } else if (field.type().isEnum()) {
-            // Enum field (Phase 1, PRP-28): stored as a uuid or name string — ArcadeDB has no
+            // An enum crosses the boundary as one string (its uuid or its name) — ArcadeDB has no
             // concept of an arbitrary Java enum class, and createProperty(name, Class<?>) does not
-            // recognize one. isEnum() is a plain Class metadata bit (like isInterface()/isArray()),
-            // not reflection in the getEnumConstants() sense this library otherwise avoids.
-            p = documentType.createProperty(fieldName, Type.STRING);
+            // recognize one. A list of them is a LIST of those strings, which is what a
+            // List<String> already was, so the stored shape is unchanged.
+            case EnumField<?, ?> enumField -> documentType.createProperty(fieldName, Type.STRING);
+            case EnumListField<?, ?> enumListField -> documentType.createProperty(fieldName, Type.LIST);
 
-        } else {
-            // Regular Field - primitive or simple type
-            Class<?> fieldType = field.type();
-            p = documentType.createProperty(fieldName, fieldType);
-        }
-
-        return p;
+            case Field<?, ?> plain -> plain.type().isEnum()
+                    // A hand-written DataHelper_I can still hand us a plain Field over an enum type;
+                    // generated code no longer does. isEnum() is a plain Class metadata bit (like
+                    // isInterface()/isArray()), not reflection in the getEnumConstants() sense.
+                    ? documentType.createProperty(fieldName, Type.STRING)
+                    : documentType.createProperty(fieldName, plain.type());
+        };
     }
 
     /**

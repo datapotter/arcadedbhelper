@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>io.github.datapotter</groupId>
+    <artifactId>datapotter-arcadedbhelper-parent</artifactId>
+    <version>2.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>DataPotter ArcadeDBHelper (parent)</name>
+    <description>The ArcadeDB backend: one implementation over datahelper, versioned on its own line.</description>
+
+    <!--
+      A SEPARATE REACTOR FROM datahelper, ON PURPOSE. This is one backend over that core, not a part
+      of it — the dependency runs one way and has never run the other. The release histories agree:
+      this reached 1.8 while datahelper-annotations reached 1.2, and 1.2/1.3/1.4 here each recorded
+      "no annotation-processor change", meaning they shipped while the core stood still. Folding the
+      two together would have dragged every core module to a new version for an ArcadeDB query
+      feature, and would have made a future second backend just another entry in a growing list.
+
+      The two lines happen to start aligned at 2.0 because this release is the one that consumes
+      datahelper 2.0. They are free to diverge from here, and should.
+
+      datahelper.version is ONE property rather than the five places these coordinates used to be
+      written, so moving to the next core release is a one-line change. Point it at the SNAPSHOT
+      while developing a cross-boundary change, and at the released version once the core is
+      published.
+    -->
+
+    <properties>
+        <datahelper.version>2.0-SNAPSHOT</datahelper.version>
+    </properties>
+
+    <modules>
+        <module>core</module>
+        <module>processor</module>
+    </modules>
+</project>

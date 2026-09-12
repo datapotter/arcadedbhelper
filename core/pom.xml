@@ -4,7 +4,12 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>io.github.datapotter</groupId>
+    <parent>
+        <groupId>io.github.datapotter</groupId>
+        <artifactId>datapotter-arcadedbhelper-parent</artifactId>
+        <version>2.0-SNAPSHOT</version>
+    </parent>
+
     <artifactId>datapotter-arcadedbhelper</artifactId>
     <!--
       1.7 — PRP-30: a List of @AsUuid/@AsName enums stores as a LIST of the same strings a bare enum
@@ -100,7 +105,6 @@
         (an @AsUuid constant would have silently stored its name instead of its uuid); fixed here as
         part of closing this gap. Additive; no schema-property-type change for non-enum fields.
     -->
-    <version>1.8-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>DataPotter ArcadeDbHelper</name>
@@ -141,14 +145,14 @@
         <dependency>
             <groupId>io.github.datapotter</groupId>
             <artifactId>datapotter-datahelper-base</artifactId>
-            <version>1.3</version>
+            <version>${datahelper.version}</version>
         </dependency>
 
         <!-- DataHelper Annotations -->
         <dependency>
             <groupId>io.github.datapotter</groupId>
             <artifactId>datapotter-datahelper-annotations</artifactId>
-            <version>1.1</version>
+            <version>${datahelper.version}</version>
         </dependency>
 
         <!-- ArcadeDB Engine -->
@@ -166,6 +170,19 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+          BACKUP DATABASE lives here, not in the engine: without it the command fails at runtime with
+          "backup libs not found in classpath". Backups issues it as SQL, so there is no compile-time
+          dependency and consumers are not forced to take this jar - it is test scope so our own trials
+          can exercise the backup path. A consumer that wants Backups.take adds it themselves.
+        -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-integration</artifactId>
+            <version>${arcadedb.version}</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- ASM for bytecode analysis -->
         <dependency>
             <groupId>org.ow2.asm</groupId>
@@ -173,13 +190,6 @@
             <version>9.7</version>
         </dependency>
 
-        <!-- Lombok -->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <version>1.18.42</version>
-            <scope>provided</scope>
-        </dependency>
     </dependencies>
 
     <build>
@@ -193,12 +203,7 @@
                         <path>
                             <groupId>io.github.datapotter</groupId>
                             <artifactId>datapotter-datahelper-processor</artifactId>
-                            <version>1.3</version>
-                        </path>
-                        <path>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                            <version>1.18.42</version>
+                            <version>${datahelper.version}</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
