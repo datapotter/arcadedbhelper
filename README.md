@@ -1,372 +1,114 @@
-# DataHelper
+# ArcadeDBHelper
 
-Compile-time code generator (annotation processor) for Java 21+ DTOs. For each annotated class it generates:
+A compile-time, reflection-free persistence layer for [ArcadeDB](https://arcadedb.com), built on [`datapotter/datahelper`](https://github.com/datapotter/datahelper)'s codegen core. One annotation on a plain Java class generates the schema definition, type-safe field symbols, a typed query/upsert/delete DSL, graph (vertex/edge/link) support — and a schema migration engine that detects a *rename* (type or property) from the source code alone and applies it safely, instead of reading it as a drop-and-add.
 
-- **Type-safe field symbols** — `$name`, `$email` constants (`Field<Owner,Type>`) + a `FIELDS` list. Refer to fields by symbol, not stringly-typed names.
-- **Reflection-free property access** — `getPropertyByName` / `setPropertyByName` / `getPropertyType` backed by `switch` (no reflection; works on TeaVM/GraalVM native).
-- **Bean + fluent accessors** — `getName()`/`setName()` and `name()`/`name(v)` (fluent setter returns `this`).
-- **Pluggable serialization traits** — JSON, ArcadeDB, etc. are *interfaces with default methods* that build on the property accessors. Add a trait by adding it to the `implements` clause.
+Not an ORM in the Hibernate sense — there is no session, no lazy proxy, no reflection anywhere. Every accessor, every schema property, every query field is a name the compiler checked, backed by a generated `switch`. That is also what makes it run unmodified on GraalVM native-image and TeaVM (Java-to-JS in the browser), which reflection-based mapping cannot.
 
-It is a Lombok alternative that also works *alongside* Lombok. Lombok generates accessors at the source level; DataHelper additionally gives you reflection-free metadata + serialization. Output is plain generated `.java` — readable, debuggable, no runtime agent.
+> **Where this stands:** actively developed, `2.0-SNAPSHOT`, not yet on Maven Central. Docs are AI-assisted and the full worked tutorial is still private — this README is the orientation; [`core/README.md`](core/README.md) and the javadoc are the fuller reference. Everything claimed below has a jbang reproducer in the repo or was measured against a real ArcadeDB instance — see "Found while building this" near the end.
 
-Other advantage of datahelper
-- One advantage over lombok is that the functions (getters/setters) are really there created physically, so you can use your IDE (like netbeans) to inspect and find usages and know the effects of refactoring, and possibly even initiate refactor. For IntelliJ (which has a plugin for lombok) probably this will not matter that much. 
-- Lombok is brittle it breaks after every new jdk release and then the library maintainers fight with the changes and fix it, datahelper will be more stable and will probably work even after 10 years of not even maintaining. 
+## Quick look
 
-## Do you even need this library?
+```java
+@ArcadeData(id = "aK3f_9")                         // stable type identity — see "Schema evolution" below
+public final class Person extends Person_A {       // Person_A is generated
+    @P("o3KcQR") String name;                       // stable field identity — optional per field
+    String email;
+    Integer age;
 
-The one deciding question: **do you need any of DataHelper's distinguishing features?**
+    public static final TypeDef<Person> TYPEDEF =
+        schemaBuilder().factory(Person::new).unique($email).__();
+}
 
-- type-safe field symbols (`$name`, `FIELDS`),
-- reflection-free property access (`getPropertyByName` / `setPropertyByName` / `getPropertyType`),
-- pluggable serialization traits (JSON, ArcadeDB, or your own),
-- and, because none of the above uses reflection, operation on TeaVM / GraalVM-native.
+// Schema is created — or migrated — from these classes alone:
+MigrationPlan plan = InitDoc.initDocTypes(db, Person.TYPEDEF);
 
-If you need **none** of those, plain Java or Lombok is simpler — don't reach for DataHelper. DataHelper is new; adopt it by addition, not by rewrite.
+// Typed, lazy queries. Neither a field name nor a type name is ever a bare string:
+for (Person p : query(db, Person.TYPEDEF).eq($city, "Chennai").orderByAsc($name)) { ... }
 
-Keep the two `@Data` annotations straight — disambiguate by import:
+db.transaction(() -> upsert(db, Person.TYPEDEF).key($email, email).set($age, 30).save());
+```
 
-- `lombok.Data` — Lombok's; writes accessors. `@DataHelper` generates the interface split `Xxx_IR` (readable) + `Xxx_I` (read+write) — symbols + *abstract* accessor declarations + property accessors — plus the immutable record `Xxx_R`, so it **needs** Lombok (or hand-written getters/setters) to supply the accessor bodies on the mutable class. This is the "with Lombok" pairing.
-- `datapotter.datahelper.Data` — DataHelper's own; generates the same `Xxx_IR`/`Xxx_I`/`Xxx_R` plus a self-contained sealed `Xxx_A` parent that writes the accessor bodies (delegating to the child) **and** `equals`/`hashCode`/`toString`; the property/fluent methods and `toRecord()` are inherited from the generated interfaces. Used alone, **no Lombok**.
+## Schema evolution: renames become detectable, then safe
 
-Both paths expose the identical symbol + property-accessor API.
+This is the newest and most distinctive part of the library, and the reason the [property-rename feature request](https://github.com/ArcadeData/arcadedb/issues/7589) against ArcadeDB itself exists.
 
-### Conclusions
+**The problem every code-first mapper hits.** Diff a schema by name and a rename is indistinguishable from a delete plus an add — Hibernate's `hbm2ddl.auto=update` adds the new column and abandons the old one; EF Core scaffolds Drop+Add for you to hand-edit; Django is the honest one and just asks "did you rename X to Y?". None of them is being lazy — without a stable identity, the two cases really do look the same.
 
-- **Immutable carrier, none of the features needed** → a Java `record` is the simplest thing. (DataHelper also *generates* an immutable record projection — see [Immutable record projection](#immutable-record-projection) — giving you immutability **and** the symbol/serialization API.)
-- **Existing Lombok project, only boilerplate needed** → Lombok alone; don't add DataHelper just to have it. For a *mutable* DTO the fluent POJO already covers construction — `@Builder`/`@With` only earn their keep on *immutable* types — so Lombok's remaining edge is mostly an all-args constructor and ecosystem familiarity.
-- **Already on Lombok and now need a DataHelper feature on some DTO** → keep Lombok, add `@DataHelper` beside `lombok.@Data` (or `@Getter @Setter`). Lombok keeps writing accessors; DataHelper adds the symbols, reflection-free access, and traits. Lowest-friction adoption — the transition path, no migration.
-- **New code, no Lombok wanted, or a TeaVM/GraalVM-native target** → DataHelper's own `@Data` alone. It generates accessors, fluent methods, symbols, property accessors, **and** `equals`/`hashCode`/`toString` — for a mutable DTO you give up essentially nothing vs Lombok. Accept the `_A` constraints: the class is `final`, `extends Xxx_A`, with package-private fields.
+**So give every type and property one.** `@P("o3KcQR")` on a field, `@ArcadeData(id = "aK3f_9")` on a class — six base64url characters, five random plus one checksum character. Never hand-authored: a field with no `@P` under `requireIds = true` fails the build with a freshly minted id ready to paste, and any single-character typo of a real one fails the same way, at compile time, instead of silently orphaning a column later. Both are `SOURCE`-retained, so the id costs nothing at runtime and reaches schema init only through the generated field symbol (`Field_I.stableId()`) — no reflection, ever.
 
-**Default stance:** new mutable DTOs (or any needing the symbol/serialization API) → DataHelper's `@Data`; pure immutable carriers → `record`; existing Lombok DTOs → leave them, reach for `@DataHelper` only where a feature is actually needed.
+**Identity is optional at every granularity**, deliberately — a still-forming schema shouldn't have to commit to permanence before it has earned it. Annotate one field, some fields, a whole type, or nothing; whatever is identified gets rename detection, and the rest degrades exactly to today's name-based behaviour. The matching order is fixed: by id first, then by name, then reported as unmatched — never guessed at.
 
-> Note: DataHelper's generated `equals`/`hashCode` are **value-based over all fields** (like Lombok `@Data`). Same footgun: mutating a field while the DTO sits in a `HashSet`/`HashMap` key breaks it. The immutable record projection (`toRecord()`) is the clean fix; a `final` child class can also override any of the three for key-based identity.
+**What it does automatically, at schema init (`InitDoc.initDocTypes`):**
+- A type matched by id under a new name is renamed outright, through a wrapper (`Rename.type`) that captures every index definition, drops the indexes, renames, and rebuilds them — because a bare engine rename on some ArcadeDB versions silently drops every index on the type (see below).
+- A property matched by id under a new name is *detected* and reported, but never renamed in place — ArcadeDB has no `ALTER PROPERTY .. NAME`, so applying it means rewriting every row. That is collected into a `MigrationPlan` instead of being done implicitly.
+- An id that vanishes from source is marked orphaned, never dropped — the ambiguity between "deleted field" and "commented out mid-refactor" is real, and guessing wrong destroys data.
+- An edited id — same field, a different but valid id — is refused with an exception naming the collision, rather than silently creating a second property.
+
+**Applying a detected rename is a deliberate, separate step**, on purpose:
+
+```java
+MigrationPlan plan = InitDoc.initDocTypes(db, Person.TYPEDEF, Order.TYPEDEF);
+if (!plan.isEmpty()) {
+    plan.print();                              // read-only — see what's pending
+    plan.apply(db, backupPath);                 // backs up first, then applies
+}
+```
+
+`apply` backs up the database, then runs a seven-statement recipe per rename — create the new property (Java API, carrying the old one's constraints and its own id), copy every row's value across, drop the indexes standing on the old property (ArcadeDB refuses to drop a property while one does), remove the old property, rebuild the indexes against the new name. Every step is journalled beside the database *before* the next one runs, so a crash mid-migration resumes from wherever it stopped rather than restarting or double-applying.
+
+This is exactly the workaround described in the feature request: **it is what we built because the engine doesn't yet have an in-place property rename.** If it grows one, most of this collapses to a single statement.
+
+## Everything else
+
+- **Typed queries, upserts, deletes** — `eq/neq/lt/le/gt/ge/like/ilike/in/between/isNull/isNotNull`, lazy iteration, `firstOrNull/count/exists`, and a `Delete` verb that exists because bulk-deleting through raw SQL left ArcadeDB's own LSM indexes holding entries for records that no longer existed (measured: it happened at ~370k rows, silently, and later reads threw `RecordNotFoundException` mid-iteration). `Indexes.duringBulkChange` drops and rebuilds indexes around a large write, cutting a 50k-row bulk change from 142s to 2.9s in the same measurement.
+- **Graph & references** — `Link<T>`/`LinkList<T>`/`LinkMap<K,T>` for RID-only references versus a DTO field that embeds a full copy; `$out`/`$in`/`$both` adjacency on vertices and `Traverse` for walking a held `Vertex` without a redundant fetch; query-shaped resolution (`SELECT *, customer:{*} ...`) comes back already resolved.
+- **Enums with declared identity** — `@AsUuid`/`@AsName` on the enum (never the field, so there's no way to store one vocabulary two inconsistent ways), validated against the declared encoding's alphabet and length at the enum's own declaration; resolution never throws on an unrecognised value, because a row written by newer code is not a corrupt row.
+- **Nested objects, lists, maps** — recurse the same reflection-free way the schema and the JSON trait do.
+
+Full detail, with code, for all of the above: [`core/README.md`](core/README.md).
+
+## Foundation: DataHelper
+
+The reflection-free codegen this all sits on lives in the sibling repo, [`datapotter/datahelper`](https://github.com/datapotter/datahelper): field symbols, by-name property access backed by generated `switch`, pluggable serialization traits (JSON, this ArcadeDB module, or your own), an immutable record projection generated alongside the mutable class, and interop with plain Lombok DTOs for anyone who wants the symbols and traits without switching how accessors are written.
+
+## Found while building this
+
+Real usage against a real ArcadeDB instance surfaced engine behaviour worth being upfront about, because it's also why the migration engine above is as defensive as it is:
+
+- Renaming a type destroyed every index on it, silently — correct in memory, gone at the next reopen, and a UNIQUE constraint stopped enforcing (fixed upstream in ArcadeDB 26.9.1; `Rename.type` guards against it on any version regardless).
+- A query combining a null check with another condition and a `limit`, or a plain `skip`+`limit` page, returned far fewer rows than actually matched — [reported and root-caused upstream](https://github.com/ArcadeData/arcadedb/issues/6565).
+- `BACKUP DATABASE` on Windows ignores its own path argument and, separately, produces an archive that can't be restored — [reported upstream](https://github.com/ArcadeData/arcadedb/issues/7586).
+
+None of this is a knock on ArcadeDB — an embedded, single-writer, multi-model engine that's fast and pleasant to build on is a rare thing, which is the whole reason this library exists rather than reaching for something else. It's stated here because a persistence layer that hasn't been run hard enough to find these has not been tested, and because the migration engine's insistence on capturing-before-touching, journalling-before-acting, and refusing rather than guessing is a direct response to having watched an engine-level rename quietly eat a constraint.
+
+## Roadmap
+
+Honestly incomplete, in the spirit of the section above:
+
+- **Three explicit schema modes** (`recreate` / `additive` / `strict`) as distinct types rather than a boolean beside an enum — not yet designed past the requirement that a hybrid mode should be unrepresentable, not merely undocumented.
+- **Narrowing migrations** (`int → short`) decided by scanning the existing data at init, before the store opens for writes — safe here because ArcadeDB is embedded and single-writer, so there's no race to worry about.
+- **A schema history table** recording what the schema looked like at each run — its real payoff is a backup restored into much newer code, where the live database can no longer answer what changed.
+- **Bulk id minting/repair tooling** (`datapotter-id`) sharing the same implementation the processor already uses to mint ids one at a time on a failed build.
+- Whatever `ALTER PROPERTY .. NAME` — if ArcadeDB ships one — turns out to need on this side; most of the migration recipe above exists only because it doesn't yet.
 
 ## Maven
 
 ```xml
-<dependencies>
-  <dependency>
+<dependency>
     <groupId>io.github.datapotter</groupId>
-    <artifactId>datapotter-datahelper-base</artifactId>
+    <artifactId>datapotter-arcadedbhelper</artifactId>
     <version>2.0</version>
-  </dependency>
-  <dependency>
-    <groupId>io.github.datapotter</groupId>
-    <artifactId>datapotter-datahelper-annotations</artifactId>
-    <version>2.0</version>
-  </dependency>
-</dependencies>
+</dependency>
+```
 
-<build><plugins><plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-compiler-plugin</artifactId>
-  <configuration>
-    <annotationProcessorPaths>
-      <path>
+```xml
+<annotationProcessorPaths>
+    <path>
         <groupId>io.github.datapotter</groupId>
-        <artifactId>datapotter-datahelper-processor</artifactId>
+        <artifactId>datapotter-arcadedbhelper-processor</artifactId>
         <version>2.0</version>
-      </path>
-      <!-- add the lombok path here too, only if using @DataHelper mode -->
-    </annotationProcessorPaths>
-  </configuration>
-</plugin></plugins></build>
+    </path>
+</annotationProcessorPaths>
 ```
 
-> **2.0 is not yet on Maven Central.** It is built and installed locally as `2.0-SNAPSHOT`; the last published line is 1.x, where the four modules carried independent versions. Everything documented below describes 2.0.
-
-**One version for all four modules from 2.0 onward.** `annotations`, `base`, `json` and `processor` are built together by `datahelper/pom.xml` and released together, because generated code does not compile against an older `base` — the 1.x matrix described combinations that were never going to work. The ArcadeDB modules are a **separate** reactor on their own version line; they consume this one, not the other way round.
-
-Optional: `datapotter-datahelper-json` (JSON trait, JVM-only). The generated source appears under `target/generated-sources/annotations`.
-
-## Usage — no Lombok (DataHelper's `@Data`)
-
-Recommended when Lombok is not available. The class must be `final`, extend the generated `Xxx_A`, and declare **package-private** fields (no modifier) — the sealed parent delegates to them.
-
-```java
-import datapotter.datahelper.Data;   // DataHelper's @Data — NOT lombok.Data
-
-@Data
-public final class Person extends Person_A {   // Person_A is generated
-    String name;
-    String email;
-    Integer age;
-}
-```
-
-```java
-var p = new Person().name("Ann").age(30);      // fluent setters chain
-p.getName();                                   // "Ann"  (bean getter)
-p.name();                                      // "Ann"  (fluent getter)
-Person.$email.name();                          // "email" — compile-checked field name
-Person.$email.type();                          // String.class
-p.getPropertyByName("age");                    // 30     — reflection-free dynamic read
-p.setPropertyByName("age", "31");              // value coerced to Integer
-Person.FIELDS.forEach(f -> ...);               // iterate all field symbols
-```
-
-## Usage — with Lombok (`@DataHelper`)
-
-Use when Lombok is already on the classpath. Lombok writes the accessors; DataHelper generates the `Xxx_I` interface the class implements.
-
-```java
-import lombok.Data;                          // Lombok's @Data — NOT datapotter.datahelper.Data
-import datapotter.datahelper.DataHelper;
-
-@DataHelper
-@Data                                        // Lombok (or @Getter @Setter) — supplies the accessor bodies
-public class Person implements Person_I<Person> {   // Person_I is generated
-    String name;
-    String email;
-    Integer age;
-}
-```
-
-Same API as above (`$name`, `FIELDS`, `name()`, `getPropertyByName(...)`, …). Add Lombok to `annotationProcessorPaths` alongside the DataHelper processor.
-
-`@DataHelper` also accepts `propertyAnnotations` / `superInterfaces` (e.g. `@DataHelper(propertyAnnotations = {JSProperty.class}, superInterfaces = {JSObject.class})`) to decorate generated accessors for frameworks like TeaVM.
-
-## JSON serialization
-
-Add the `datapotter-datahelper-json` dependency. No reflection, no external JSON library. The trait is split: `Json_IR` is the read side (`toJson`), `Json_I extends Json_IR` adds the write side (`fromJson`).
-
-```java
-// Mutable only — add the full trait to the implements clause:
-// no-Lombok (DataHelper @Data):  public final class Person extends Person_A implements Json_I<Person>
-// with-Lombok (@DataHelper):      public class Person implements Person_I<Person>, Json_I<Person>
-
-var json = p.toJson();              // deep (recurses nested/list/map); skips null fields
-var shallow = p.toJson(false);      // nested objects not expanded
-var q = new Person().fromJson(json);
-```
-
-To also give the **record projection** `toJson`, declare the read-side trait via `superInterfaces` so it lands on `Person_IR` (and the processor auto-routes the `fromJson` write half onto the mutable `Person_I`):
-
-```java
-@DataHelper(superInterfaces = {Json_IR.class})
-public class Person implements Person_I<Person> { ... }
-
-var j = p.toRecord().toJson();      // record carries toJson via Person_IR
-```
-
-JVM-only — avoid on TeaVM (use `JSObject` directly there).
-
-## Jackson interop
-
-DataHelper DTOs are standard beans (`getX`/`setX`), so Jackson serializes/deserializes them out of the box in **both** modes — including the no-Lombok `@Data` path, where the accessors are inherited from the generated `_A` parent (Jackson walks the class hierarchy). The extra fluent (`name()`) and utility (`getPropertyByName(String)`, `dataClass()`, `fieldNames()`) methods aren't bean-shaped, so Jackson ignores them.
-
-Customize with Jackson annotations on the **field** — Jackson merges field annotations onto the property even when the accessor is generated:
-
-```java
-@Data
-public final class Person extends Person_A {
-    @JsonProperty("full_name") String name;
-    @JsonIgnore String secret;
-    @JsonFormat(shape = STRING) Integer age;
-}
-```
-
-In the `@DataHelper` + Lombok path you can additionally use `lombok.config`'s `lombok.copyableAnnotations` to copy field annotations onto Lombok's accessors.
-
-This applies to **Jackson**. DataHelper's *own* built-in `toJson()` serializes by raw field name and ignores these annotations — use Jackson when you need renaming/formatting/polymorphism, the built-in serializer for the minimal, zero-dependency, reflection-free case.
-
-## Nested objects, Lists, Maps
-
-Traits serialize recursively **when the element type is itself a DataHelper DTO**. Make nested types `@DataHelper`/`@Data` too.
-
-```java
-@Data public final class Company extends Company_A {
-    String name;
-    Address address;             // nested DataHelper DTO  -> recursed
-    List<Address> branches;      // List of DTOs           -> recursed
-    Map<String, Address> sites;  // Map with DTO values     -> recursed
-}
-```
-
-Supported value kinds, both directions: nested DTO, `List<DTO>`, `Map<K, DTO>`, and plain scalars/collections. Non-string `Map` keys are coerced via `DataHelper_I.convertType`.
-
-## Enums — `@AsUuid` / `@AsName`
-
-An enum-typed field, or a `List` of one, is stored as a string. **Which** string is declared on the enum itself, once per vocabulary, and there is no default — omitting both annotations is a compile error at the first field that tries to store it, naming both options.
-
-```java
-@AsUuid(BASE64URL)                        // stored as uuid(): identity survives a rename
-public enum Outcome implements HasUuid {
-    UNKNOWN("K8Qo2wJaOz7H_AeP6KqeIQ"), FAVOURABLE("Pq6v4KrIYbjzEBH-zGTVrw");
-    private final String uuid;
-    Outcome(String uuid) { this.uuid = uuid; }
-    @Override public String uuid() { return uuid; }
-}
-
-@AsName public enum Severity { LOW, MEDIUM, HIGH }   // stored as name()
-
-@Data public final class Ticket extends Ticket_A {
-    Outcome outcome;              // fields carry NO annotation
-    List<Outcome> outcomes;       // a list of them stores a list of the same strings
-    List<Severity> severities;
-}
-```
-
-Why the storage form is declared rather than inferred from `implements HasUuid`: adding that interface later is a two-word edit, and under inference it would silently change the meaning of every row already written. Why two annotations rather than one parameterised: JPA's `@Enumerated` has a default (`ORDINAL`), so reordering constants corrupts data through a parameter nobody typed — with two annotations there is nothing to omit.
-
-`@AsUuid` validates every constant's literal against the declared encoding's alphabet and fixed 128-bit length (`BASE64URL` 22, `BASE26_LOWER` 28, `HEX` 32, `UUID_CANONICAL` 36) at the enum's own declaration, and rejects duplicates within the enum. What it cannot catch is an id **changed** from one valid value to another — that compiles clean and orphans every stored row, so keep the ids in a committed list and assert against it.
-
-Resolution never throws. A stored string matching no constant means the row was written by newer code, not that it is corrupt: a single field resolves to `null`, and an element of a list is dropped, so the list a caller receives holds exactly the constants this build can name.
-
-Both annotations are `CLASS`-retained, deliberately. Under `SOURCE` retention they are absent from the class file, so an entity compiled against a **jar** of enums would read no annotation, fall back to storing `name()`, and write the wrong identity with a green build. `CLASS` costs nothing at runtime and makes the declaration mean the same thing on both sides of a module boundary.
-
-## `@EnumData` — the `@Data` idea for an enum
-
-`@Data` hangs accessors on a generated base class the type extends. An enum already extends `Enum`, so `@EnumData` puts them on a generated **sealed interface** instead, one `default` accessor per instance field:
-
-```java
-@AsUuid(BASE64URL)
-@EnumData(traits = Described.class)
-public enum OrderCoverage implements OrderCoverage_I {
-    NONE("N-40v1pMekz01Qdm7NFXiA", "No order file in hand."),
-    ORDER_HELD("atHGV0wnvUKZaRe7JTDoAw", "An order file is in hand.", "2018 SLP 4774");
-
-    final String uuid, description;          // package-private: an interface default reads them
-    final List<String> examples;
-    OrderCoverage(String uuid, String description, String... examples) {
-        this.uuid = uuid; this.description = description; this.examples = List.of(examples);
-    }
-}
-```
-
-There is no `uuid()`, no `description()`, no `examples()` to write — and **no `self()` either**. Because `OrderCoverage_I` is sealed permitting only `OrderCoverage`, the generated interface supplies `default OrderCoverage self() { return (OrderCoverage) this; }` itself, a cast the seal makes total. The enum also stops naming `HasUuid`: `@AsUuid` puts it on the generated interface.
-
-Two requirements, and one choice:
-
-- **Fields must not be `private`** — an interface default in the same package reads them directly. The same rule `@Data` places on a child class's fields.
-- **`traits` names hand-written interfaces the generated one must extend**, so the generated accessors satisfy their abstract methods. They have to land there: a `default` on `Foo_I` does not implement an abstract method of an interface `Foo_I` knows nothing about, and javac rejects the enum for not overriding it.
-- **Where a trait clashes with nothing, both forms compile** and it is a design choice:
-
-  ```java
-  @EnumData                          enum Foo implements Foo_I, Vocab   // shorter
-  @EnumData(traits = Vocab.class)    enum Foo implements Foo_I          // sturdier
-  ```
-
-  The short form holds only while nothing the trait declares is override-equivalent with a generated accessor. Add a colliding field later — an `aliases` field under a `Vocab` that defaults `aliases()` — and it stops compiling with *"inherits unrelated defaults"*, a message that does not name the fix. Prefer `traits` where such an edit is expected, or where other enums in the package need it anyway and one uniform shape is worth more than 18 characters.
-
-Where a storage form is declared, the interface also gets `Foo_I.fromStorage(String)` — the reverse of `HasUuid.storageValue` on write, and the reason a consumer never has to know whether the enum stores a uuid or a name. **No id literal is ever written into generated code**: the index is built from `values()` and `c.uuid()`, so the enum source stays the only place an id exists. It lives in a lazily-initialised nested holder, because a `Map` field on the interface itself is initialised by the *enum's* class init and would read `values()` back as `null`.
-
-`@EnumData` is opt-in and additive. An enum carrying only `@AsUuid`/`@AsName` behaves exactly as before, hand-written accessors and all, and the two forms mix freely inside one entity.
-
-## Reflection-free dynamic access
-
-This is the distinguishing feature, and it's easy to undersell. Every generated type implements the readable contract `DataHelper_IR` (mutable types add the write side `DataHelper_I`), all backed by a generated `switch` — **no reflection**. So a generic helper written **once** works for *every* DTO **and** runs where reflection doesn't: TeaVM (Java→JS in the browser) and GraalVM native images.
-
-The contract:
-
-```java
-var cls   = p.dataClass();                   // Person.class
-var names = p.fieldNames();                  // ["name","email","age"]
-var t     = p.getPropertyType("age");        // Integer.class
-var v     = p.getPropertyByName("age");      // read by name
-p.setPropertyByName("age", "31");            // write by name — coerced to Integer
-// container metadata:
-p.isListField(f); p.isMapField(f); p.isNestedObjectField(f);
-p.createNestedObject(f); p.createListElement(f); p.createMapValueElement(f);
-```
-
-What that unlocks — each helper written once, for *all* DTOs:
-
-**Bind HTTP query/form params to a DTO** — the boilerplate every web layer hand-writes, now generic (and it runs in the browser under TeaVM):
-
-```java
-static <T extends DataHelper_I<T>> T bind(T dto, Map<String,String> params) {
-    for (var f : dto.fieldNames())
-        if (params.containsKey(f))
-            dto.setPropertyByName(f, params.get(f));   // "500" -> Integer, "true" -> Boolean
-    return dto;
-}
-
-var query = bind(new ProductQuery(), request.params());   // ?q=phone&minPrice=500&inStock=true
-query.minPrice();                                          // real Integer 500, already coerced
-```
-
-**Field-level diff for PATCH / audit logs** — reads only `DataHelper_IR`, so it works on records and mutable DTOs alike:
-
-```java
-static List<String> changedFields(DataHelper_IR<?> a, DataHelper_IR<?> b) {
-    return a.fieldNames().stream()
-        .filter(f -> !Objects.equals(a.getPropertyByName(f), b.getPropertyByName(f)))
-        .toList();
-}
-
-var before = loaded.toRecord();             // cheap immutable snapshot
-loaded.setEmail("new@x.com");
-changedFields(before, loaded.toRecord());   // ["email"] -> audit trail / optimistic-lock / PATCH body
-```
-
-**Project to a map for any sink** — NoSQL document, cache, template engine, signed payload — with no JSON library:
-
-```java
-static Map<String,Object> toMap(DataHelper_IR<?> dto) {
-    var m = new LinkedHashMap<String,Object>();
-    for (var f : dto.fieldNames()) m.put(f, dto.getPropertyByName(f));
-    return m;
-}
-```
-
-The JSON and ArcadeDB traits use this same by-name mechanism — JSON is just one sink. The alternative, doing any of this over a plain `record`, means reflecting over `getRecordComponents()`/`invoke()`: slower, untyped, needs GraalVM reflection config, and simply unavailable on TeaVM.
-
-`DataHelper_I.convertType(value, targetType)` handles the common String/Number ↔ boxed-primitive coercions used by `setPropertyByName`.
-
-## Immutable record projection
-
-Every DTO gets a generated immutable record `Person_R` that shares a **readable** interface (`Person_IR`) with the mutable class:
-
-- `Person_IR` (readable: getters, `$symbols`, `FIELDS`, read-side property access) is the shared super.
-- `Person_I` (full, read+write) `extends Person_IR` — implemented by the mutable class.
-- `Person_R` is a `record` implementing `Person_IR` — immutable, safely hashable (record-native value `equals`/`hashCode`), no setters.
-- Conversions: `mutable.toRecord()` → `Person_R`, `record.toMutable()` → `Person` (plus a static `Person.from(record)`); **deep** for nested DTOs/Lists/Maps (`Address` → `Address_R`, `List<Address>` → `List<Address_R>`, `Map<K,Address>` → `Map<K,Address_R>`).
-
-`_IR` is **readable**, not read-only/immutable: a mutable `Person` is also a `Person_IR`, so a `Person_IR` reference only promises "you can read through this," not that the object never changes — immutability is the record's (`_R`) guarantee. An API taking `Person_IR` therefore accepts both the mutable DTO and the record. This gives an immutable, correctly-hashing snapshot (avoiding the mutable-in-a-`HashSet` footgun) while keeping the full symbol + serialization API.
-
-```java
-var p = new Person();
-p.setName("Ada");
-p.setHome(new Address(/* ... */));         // nested DTO
-
-var snapshot = p.toRecord();               // deep: home is now an Address_R
-snapshot.getName();                        // "Ada" — typed read
-snapshot.home().getCity();                 // nested read through Address_IR
-set.add(snapshot);                         // safe HashSet key (value semantics, never mutates)
-
-var again  = snapshot.toMutable();         // deep round-trip back to mutable
-var again2 = Person.from(snapshot);        // equivalent static factory
-```
-
-Nested DTO fields must be declared as the **concrete** type (`Address`), not a generated variant (`Address_IR`/`Address_I`/`Address_R`/`Address_A`); the processor derives those itself and rejects variant declarations with a clear error.
-
-**Traits on records.** A read-side trait declared via `@DataHelper(superInterfaces = {Json_IR.class})` is mixed into `Person_IR`, so the record gets it too — e.g. `personRecord.toJson()`. The processor automatically routes the trait's write half (`Json_I`, providing `fromJson`) onto the mutable `Person_I` only; records aren't deserialized into directly (parse into the mutable form, then `toRecord()`).
-
-### vs. record-builder
-
-[record-builder](https://github.com/Randgalt/record-builder) and DataHelper are both pure compile-time generators (no runtime reflection) producing immutable, value-semantic records with immutable collections. record-builder centers on immutable-record *construction* ergonomics — and DataHelper's fluent mutable + record round-trip covers those, usually more simply:
-
-- **builder / `build()`** → the fluent mutable POJO *is* the builder: `new Person().name("x").age(5)`; `.toRecord()` is `build()`.
-- **withers (`withX` / `with(Consumer)`)** → `r.toMutable().name("x").toRecord()` — a new record, original untouched. One expression, any number of fields, arbitrary logic in between; no per-field `withX` or `Consumer<Builder>` ceremony.
-- **`@Initializer` defaults** → a plain field initializer (`int age = 18;`), captured by `toRecord()`.
-- **define-once → record + interface** → one annotated class yields `_IR` + `_I` + `_R` (record *and* interfaces), vs record-builder's `@RecordInterface` yielding a record from an interface.
-
-On top of that DataHelper has what record-builder has no equivalent for: field symbols (`$name`, `FIELDS`), reflection-free by-name access, serialization traits (JSON/ArcadeDB/your own), TeaVM/GraalVM-native operation, the readable↔writable split, and mutable-class + Lombok interop.
-
-The only genuine record-builder-only things, both minor: a **staged builder**'s compile-time guarantee that every required field is set before you obtain a record (the round-trip lets you `toRecord()` a half-filled object), and — for deeply nested graphs in hot paths — a single-field change round-trips through two deep copies where a record wither shallow-copies.
-
-## Modules
-
-All under group `io.github.datapotter`:
-
-- `datapotter-datahelper-base` — runtime: `DataHelper_IR` (readable) / `DataHelper_I` (read+write), `EnumData_I` (the `self()` root for `@EnumData`), the sealed `Field_I` descriptor family (`Field`, `DataField`, `ListDataField`, `MapDataField`, `LinkField`, `LinkListField`, `LinkMapField`, `EnumField`, `EnumListField`), `convertType`.
-- `datapotter-datahelper-annotations` — `@DataHelper`, `@Data`.
-- `datapotter-datahelper-processor` — annotation processor (handles both annotations); generates `_IR`/`_I`/`_R` (+`_A` for `@Data`); goes on `annotationProcessorPaths` only.
-- `datapotter-datahelper-json` — optional JSON trait (JVM): `Json_IR` (`toJson`, read) / `Json_I` (`fromJson`, write).
-- `datapotter-arcadedbhelper` — optional ArcadeDB persistence trait + `@ArcadeData` (separate module; see its README).
-
-## ArcadeDB integration
-
-The optional `datapotter-arcadedbhelper` module adds an `@ArcadeData` annotation and an `ArcadeDoc_I` trait for persisting DataHelper DTOs to [ArcadeDB](https://arcadedb.com) — schema generation, an instance-level upsert/insert DSL, and document (de)serialization. See that **module's own README** for usage, and `project-journals/aracde_db_context/arcade-db-working-examples-2026-07-31.md` for the complete worked tutorial.
+> Not yet on Maven Central — built and installed locally as `2.0-SNAPSHOT`. See [`core/README.md`](core/README.md) for version-compatibility notes across ArcadeDB releases.

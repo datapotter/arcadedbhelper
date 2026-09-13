@@ -201,6 +201,71 @@ Traverse.out(bobV, Person::new, Knows.class);   // also .in / .both / .adjacent(
 
 Same traversal, same results; it just avoids building a DTO purely to read its RID and then re-fetching the vertex you started from. Over a subtree walk that is one redundant record fetch per node.
 
+## Schema evolution: identity, detection, and a safe migration recipe
+
+Every code-first schema tool diffs by name, which makes a rename indistinguishable from a delete plus an add. Give a type or property a stable identity instead, and that category of failure stops existing.
+
+### Declaring identity
+
+```java
+@ArcadeData(id = "aK3f_9")                      // type identity
+public final class Person extends Person_A {
+    @P("o3KcQR") String name;                   // field identity
+    String email;                                // unidentified — fine, degrades to name-based behaviour
+}
+```
+
+Add `requireIds = true` to the annotation once a type is meant to be fully identified — it turns a missing `@P` on *any* field into a build failure naming the id to paste, rather than a silent partial-adoption gap.
+
+Six base64url characters, five random plus one checksum character, for both `@P` and `@ArcadeData(id=...)`. **Minted, never hand-authored**: omit `@P` on a field under `requireIds = true` and the build fails with a freshly generated id in the message, ready to paste. The checksum means a hand-picked six characters passes only 1 time in 64, and any single-character typo of a real id fails the same way — at compile time, instead of silently orphaning a column at migration time.
+
+**Identity is optional at every granularity, and that's a requirement, not a gap.** A schema still being conceived shouldn't have to commit to permanence it hasn't earned — annotate everything, one type, one field, or nothing. Matching runs in a fixed order: by id first, then whatever's left by name, then report the remainder as unmatched. Nothing about partial adoption is a half-state to warn about.
+
+### What happens automatically at init
+
+`InitDoc.initDocTypes` reads the current schema — by id, then by name — **before** creating or renaming anything, which is what makes detection possible at all (an eager `existsType` check would have already created the duplicate a rename must not produce):
+
+- **Type matched by id, different name → renamed outright**, through `Rename.type` (see below) rather than a bare engine rename.
+- **Property matched by id, different name → detected, not renamed.** ArcadeDB has no `ALTER PROPERTY .. NAME`; applying this rewrites every row (see the recipe below), so it's collected into a returned `MigrationPlan` instead of happening implicitly. The property keeps its current name until that plan is applied.
+- **Recorded id no longer claimed by any declared field → marked orphaned, never dropped.** An id vanishing from source is ambiguous — a deleted field, or one merely commented out mid-refactor — and guessing wrong destroys data. A deliberate drop is the only way to actually remove one.
+- **A name matches but the recorded id differs → refused with an exception naming both ids.** This is the signature of an edited or mistyped id, not a rename; restoring the original id or confirming the change deliberately are the only ways forward.
+- **A matched id also implies a type change → refused, not guessed.** `String` → `Integer` under one id is a data migration, not a rename.
+
+### Applying a detected property rename
+
+```java
+MigrationPlan plan = InitDoc.initDocTypes(db, Person.TYPEDEF, Order.TYPEDEF);
+if (!plan.isEmpty()) {
+    plan.print();                    // read-only — nothing above this line has touched anything
+    plan.apply(db, backupPath);       // backs up, then applies every pending rename
+}
+```
+
+`apply` is the **only** method in this design that rewrites data. It backs up first, then runs a seven-step recipe per rename, journalling each step beside the database before the next one runs so a crash mid-migration resumes rather than restarts or double-applies:
+
+1. Create the new property via the Java API (not inline `CREATE PROPERTY .. CUSTOM` — that clause doesn't parse on ArcadeDB 26.7.3 despite being documented), carrying the old property's type, `ofType`, constraints, and its own stable id.
+2. `UPDATE <T> SET <new> = <old>` — transactional; DML through `db.command` needs an explicit one.
+3. Drop every index standing on the *old* property — `DROP PROPERTY` refuses otherwise.
+4. `UPDATE <T> REMOVE <old>` — must run **after** step 2, or the column is nulled before anything copies it.
+5. Drop the old property.
+6. Rebuild the indexes captured in step 3, now naming the new property.
+
+Every step is a no-op if its effect is already visible in the schema, so resuming from a stale journal entry is safe — what actually matters is that steps 2 and 4 can never run out of order, which the fixed sequence makes impossible to do by accident.
+
+### Renaming a type doesn't have the same problem — except it did
+
+`DocumentType.rename` exists in the engine, so a type rename is O(1) in principle. In practice, renaming a type on ArcadeDB up to and including 26.8.1 leaves the index *file* under the old name while the schema goes on recording it under the new one — correct in memory, and then at the next reopen the loader can't find the file and drops it with a single `WARNI` line. That's a dropped constraint, not a slow query: a UNIQUE index over five rows, renamed and reopened, then accepted a duplicate insert and went to six rows, with nothing reported. It can't be repaired afterwards, either — recreating the index fails because the schema still believes the old entry exists.
+
+`Rename.type(db, from, to)` is the fix: capture every index definition, drop the indexes while the schema and the files still agree, rename, then rebuild against the new name — the rebuild runs in a `finally`, so a rename that throws doesn't leave the type bare. Fixed upstream in 26.9.1, and this wrapper stays in place regardless — it costs one index rebuild either way, and a library doesn't get to assume its callers are on the newest release.
+
+### Known gaps, stated rather than hidden
+
+- `readonly` is not carried onto the new property during a rename — a readonly property would refuse the very `UPDATE` the recipe needs.
+- The `UPDATE .. BATCH` size is a fixed default (1000), not yet a per-call tuning knob.
+- Narrowing a property's type (`int → short`) isn't handled — it would need a data scan to prove the existing values fit, which is planned but not built.
+- There is no bulk id-minting CLI yet; minting today happens one field at a time, via a failed build naming the id to paste.
+- Nothing here is a schema history table — a run doesn't yet record what the schema looked like before it changed, which matters most for a backup restored into much newer code.
+
 ## Maven
 
 ```xml
