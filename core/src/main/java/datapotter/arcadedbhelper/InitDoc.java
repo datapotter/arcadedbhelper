@@ -61,6 +61,16 @@ public class InitDoc {
     private final Map<String, Property> recordedPropsByName;
     private final Set<String> touchedPropertyNames = new HashSet<>();
 
+    // Property renames detected this run but not applied (PRP-28 phase 3 collects these into a
+    // MigrationPlan; applying one rewrites every row, so it needs a backup, a journal and an
+    // explicit flag — none of which schema init itself is willing to assume).
+    private final List<PropertyRenamePlan> detectedRenames = new ArrayList<>();
+
+    /** Property renames detected this run, matched by id, not yet applied. See {@link MigrationPlan}. */
+    public List<PropertyRenamePlan> detectedPropertyRenames() {
+        return List.copyOf(detectedRenames);
+    }
+
     public InitDoc(Database db, DocumentType dt, Class<?> clzz, List<Field_I<?, ?>> fields) {
         this.db = db;
         this.documentType = dt;
@@ -88,11 +98,19 @@ public class InitDoc {
      * Automatically detects and registers embedded types in dependency order.
      * ZERO REFLECTION - uses static FIELDS metadata.
      *
+     * <p>Everything SAFE happens here and always has (type rename via {@link Rename}, creation,
+     * first-time id adoption, orphan marking). A property rename matched by id is NEVER applied by
+     * this call — it rewrites every row, so it is only ever collected into the returned
+     * {@link MigrationPlan} (PRP-28 phase 3), which nothing here calls {@link MigrationPlan#apply}
+     * on. A caller that ignores the return value (every caller before phase 3 existed, and most
+     * calls since) gets EXACTLY today's behaviour: detected, reported to stderr, never applied.
+     *
      * @param db the database instance
      * @param typeDefinitions varargs of TypeDef objects
+     * @return what was detected but not applied — empty when there is nothing pending
      */
     @SafeVarargs
-    public static void initDocTypes(Database db, TypeDef<? extends DataHelper_I<?>>... typeDefinitions) {
+    public static MigrationPlan initDocTypes(Database db, TypeDef<? extends DataHelper_I<?>>... typeDefinitions) {
         // Collect all types including embedded dependencies
         Set<Class<?>> allTypes = new LinkedHashSet<>();
         Map<Class<?>, TypeDef<?>> typeDefMap = new HashMap<>();
@@ -108,18 +126,22 @@ public class InitDoc {
             }
         }
 
+        List<PropertyRenamePlan> detected = new ArrayList<>();
+
         // Register types in dependency order (embedded types first)
         for (Class<?> clazz : allTypes) {
             TypeDef<?> typeDef = typeDefMap.get(clazz);
             List<Field_I<?, ?>> typeFields = fieldsMap.get(clazz);
 
             if (typeDef != null) {
-                initDocType(db, typeDef, typeFields);
+                detected.addAll(initDocType(db, typeDef, typeFields).detectedPropertyRenames());
             } else {
                 // Register embedded type without indexes (defaults to DOCUMENT)
-                initDocType(db, clazz, ArcadeType.DOCUMENT, typeFields);
+                detected.addAll(initDocType(db, clazz, ArcadeType.DOCUMENT, typeFields).detectedPropertyRenames());
             }
         }
+
+        return new MigrationPlan(detected);
     }
 
     /**
@@ -435,14 +457,29 @@ public class InitDoc {
                 }
                 touchedPropertyNames.add(byId.getName());
                 if (!byId.getName().equals(fieldName)) {
-                    // Rename DETECTED, not applied. ArcadeDB has no property-rename primitive; applying
-                    // this is phase 3, over the five-statement recipe measured in 28-prp.05/.06. The
-                    // property keeps its CURRENT name until then - reporting is the safety this phase
-                    // exists to add, over silently creating a second property beside an orphan.
+                    // Rename plus type change is not a rename (PRP-28's own rule) — refuse rather than
+                    // guess, before this is ever added to a plan a phase-3 apply step would carry out.
+                    Type expected = expectedStorageType(field);
+                    if (byId.getType() != expected) {
+                        throw new IllegalStateException(
+                                "Field '" + fieldName + "' is declared with id '" + stableId
+                                        + "', matching property '" + byId.getName() + "', but its stored "
+                                        + "type (" + byId.getType() + ") differs from what '" + fieldName
+                                        + "' would now store (" + expected + "). This is a data migration, "
+                                        + "not a rename, and is refused rather than guessed at.");
+                    }
+                    // Rename DETECTED, not applied here. ArcadeDB has no property-rename primitive;
+                    // applying this is the seven-statement recipe in PropertyMigration, collected into
+                    // the MigrationPlan initDocTypes returns and run only under an explicit apply, after
+                    // a backup, journalled step by step. The property keeps its CURRENT name until then -
+                    // reporting is the safety this phase exists to add, over silently creating a second
+                    // property beside an orphan.
                     System.err.println("NOTE: field '" + byId.getName() + "' appears renamed to '"
-                            + fieldName + "' (matched by id '" + stableId + "'). Not applied - a property "
-                            + "rename is phase 3. It keeps its current name '" + byId.getName()
+                            + fieldName + "' (matched by id '" + stableId + "'). Not applied here - see "
+                            + "the returned MigrationPlan. It keeps its current name '" + byId.getName()
                             + "' in the schema for now.");
+                    detectedRenames.add(new PropertyRenamePlan(
+                            documentType.getName(), byId.getName(), fieldName, stableId));
                 }
                 return byId;
             }
@@ -492,6 +529,29 @@ public class InitDoc {
                     + "') is no longer declared in source. Marked orphaned; its data is retained. "
                     + "A deliberate drop command is required to actually remove it.");
         }
+    }
+
+    /**
+     * The ArcadeDB {@link Type} a declared field would store as, WITHOUT creating anything — the
+     * same decision {@link #createProperty} makes, pulled out so a rename can be checked for a
+     * smuggled type change before it is ever added to a {@link MigrationPlan}. Deliberately
+     * duplicates {@link #createProperty}'s case labels rather than sharing a single exhaustive
+     * switch with it: both are exhaustive over the same sealed {@link Field_I}, so a new descriptor
+     * fails to compile in BOTH places until someone decides what it stores, which is the property
+     * this design has relied on since {@code collectDependencies}.
+     */
+    private static Type expectedStorageType(Field_I<?, ?> field) {
+        return switch (field) {
+            case DataField<?, ?> ignored -> Type.EMBEDDED;
+            case ListDataField<?, ?> ignored -> Type.LIST;
+            case MapDataField<?, ?, ?> ignored -> Type.MAP;
+            case LinkField<?, ?> ignored -> Type.LINK;
+            case LinkListField<?, ?> ignored -> Type.LIST;
+            case LinkMapField<?, ?, ?> ignored -> Type.MAP;
+            case EnumField<?, ?> ignored -> Type.STRING;
+            case EnumListField<?, ?> ignored -> Type.LIST;
+            case Field<?, ?> plain -> plain.type().isEnum() ? Type.STRING : Type.getTypeByClass(plain.type());
+        };
     }
 
     /**
@@ -591,11 +651,27 @@ public class InitDoc {
     /**
      * Create an index if it doesn't already exist.
      *
+     * <p><b>Deferred, not thrown, if a named property does not exist yet.</b> This is the ordinary
+     * case for a property named in a detected-but-not-applied rename (PRP-28 phase 3): the TypeDef
+     * still declares the index under the field's NEW name, which the schema will not carry until
+     * {@link MigrationPlan#apply} runs. Before phase 3 this could only mean a genuine declaration
+     * error, so it threw; now it is also the normal in-between state of an unapplied migration, and
+     * the index is simply created on the next run that finds the property present — exactly as it
+     * would be for a brand new property that has not been created yet either.
+     *
      * @param indexType the type of index to create
      * @param unique whether the index should be unique
      * @param propertyNames field names for the index
      */
     private void createIndexIfNotAlreadyThere(Schema.INDEX_TYPE indexType, boolean unique, String... propertyNames) {
+        for (String p : propertyNames) {
+            if (!documentType.existsProperty(p)) {
+                System.err.println("NOTE: index on " + documentType.getName() + java.util.Arrays.toString(propertyNames)
+                        + " deferred - property '" + p + "' does not exist yet (a pending property rename, "
+                        + "or this property has not been created). It will be created once the property is.");
+                return;
+            }
+        }
         documentType.getOrCreateTypeIndex(indexType, unique, propertyNames);
     }
 
