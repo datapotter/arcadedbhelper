@@ -26,6 +26,18 @@ public interface TypeDef<E extends DataHelper_I<E>> {
     }
 
     /**
+     * This type's stable identity (PRP-28 phase 2), from {@code @ArcadeData(uuid=...)}, or
+     * {@code null} if none is declared. {@code null} rather than {@code ""} — a {@code TypeDef}
+     * written before this existed still compiles and still means "no identity opted in", the same
+     * idiom {@link #factory()} already uses.
+     *
+     * @return the type id, or {@code null}
+     */
+    default String typeId() {
+        return null;
+    }
+
+    /**
      * A zero-reflection factory for this type — the {@code E::new} constructor reference.
      *
      * <p>Declared once, on the type definition, so that reading code never has to repeat it:

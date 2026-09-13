@@ -38,16 +38,41 @@ import datapotter.datahelper.MapDataField;
  */
 public class InitDoc {
 
+    /**
+     * The custom attribute a type or property's stable identity (PRP-28 phase 2) is stored under.
+     * An opaque string as far as this class is concerned — never parsed, never validated, compared
+     * only by equality, so a future change to the id FORMAT (owned by the annotation processors) can
+     * never strand a database already carrying ids in the old one.
+     */
+    static final String ID_KEY = "datapotter.id";
+
+    /** Marks a property no longer declared in source. Never dropped — see {@link #markOrphans()}. */
+    static final String ORPHANED_AT_KEY = "datapotter.orphanedAt";
+
     private final DocumentType documentType;
     private final Class<?> clzz;
     private final Database db;
     private final List<Field_I<?, ?>> fields;
+
+    // Property identity (PRP-28 phase 2) — captured ONCE, at construction, before this run creates
+    // anything. This is what makes plan-then-apply possible at all: reading the recorded schema
+    // after eagerly creating a property would already have produced the duplicate a rename must not.
+    private final Map<String, Property> recordedPropsById;
+    private final Map<String, Property> recordedPropsByName;
+    private final Set<String> touchedPropertyNames = new HashSet<>();
 
     public InitDoc(Database db, DocumentType dt, Class<?> clzz, List<Field_I<?, ?>> fields) {
         this.db = db;
         this.documentType = dt;
         this.clzz = clzz;
         this.fields = fields;
+        this.recordedPropsById = new HashMap<>();
+        this.recordedPropsByName = new HashMap<>();
+        for (Property p : dt.getProperties()) {
+            recordedPropsByName.put(p.getName(), p);
+            Object id = p.getCustomValue(ID_KEY);
+            if (id instanceof String s) recordedPropsById.put(s, p);
+        }
     }
 
     public DocumentType documentType() {
@@ -223,7 +248,9 @@ public class InitDoc {
      */
     public static <E extends DataHelper_I<E>>
             InitDoc initDocType(Database db, TypeDef<E> typeDef, List<Field_I<?, ?>> fields) {
-        var d = InitDoc.initDocType(db, typeDef.definition(), typeDef.arcadeType(), fields);
+        var docType = resolveOrCreateType(db, typeDef.definition().getSimpleName(),
+                typeDef.arcadeType(), typeDef.typeId());
+        var d = new InitDoc(db, docType, typeDef.definition(), fields);
         d.ensureFieldsFromList(fields);
 
         // Register LINK type fields (Phase 3)
@@ -263,6 +290,68 @@ public class InitDoc {
      * @param fields the FIELDS list
      * @return InitDoc instance for further operations
      */
+    /**
+     * Resolve the {@link DocumentType} a {@code TypeDef} refers to — by identity first, then by
+     * name, creating it only if neither matches (PRP-28 phase 2, section 5/7 of {@code 28-prp.05}).
+     *
+     * <p>Reads the CURRENT schema fresh on every call rather than from a snapshot captured once at
+     * the top of {@link #initDocTypes} — both are correct (the schema is an in-memory object graph;
+     * see {@code 28-prp.06} section "you never query by custom attribute"), and reading fresh is
+     * simpler and no more costly since each call only concerns one type. What matters, and IS
+     * preserved here, is that this read happens BEFORE anything is created: {@code existsType} by
+     * the DECLARED name is never consulted first, because that eager check is exactly what turns a
+     * rename into a second, empty, orphan-holding type.
+     *
+     * @throws IllegalStateException if the declared id matches a type by NAME whose recorded id is a
+     *                                DIFFERENT, non-null value — an edited or mistyped type id, which
+     *                                is refused rather than guessed at (DP-MIG equivalent for types).
+     */
+    private static DocumentType resolveOrCreateType(Database db, String className, ArcadeType arcadeType, String typeId) {
+        var schema = db.getSchema();
+
+        DocumentType byId = null;
+        if (typeId != null) {
+            for (DocumentType t : schema.getTypes()) {
+                if (typeId.equals(t.getCustomValue(ID_KEY))) { byId = t; break; }
+            }
+        }
+
+        if (byId != null) {
+            if (!byId.getName().equals(className)) {
+                // Matched by id under a DIFFERENT name: a genuine rename. The bare engine rename is a
+                // known data-integrity hazard on some ArcadeDB versions (silently drops every index),
+                // so this goes through the safe wrapper — capture, drop, rename, rebuild.
+                Rename.type(db, byId.getName(), className);
+            }
+            return schema.getType(className);
+        }
+
+        if (schema.existsType(className)) {
+            DocumentType existing = schema.getType(className);
+            Object recordedId = existing.getCustomValue(ID_KEY);
+            if (typeId != null && recordedId == null) {
+                existing.setCustomValue(ID_KEY, typeId); // first-time adoption
+            } else if (typeId != null && !typeId.equals(recordedId)) {
+                throw new IllegalStateException(
+                        "Type '" + className + "' is declared with id '" + typeId + "' but the schema "
+                                + "already records it under a DIFFERENT id ('" + recordedId + "'). This is "
+                                + "the signature of an edited or mistyped @ArcadeData(uuid=...) — renaming "
+                                + "is free, but editing an id is not, and doing so would orphan every "
+                                + "property recorded against the old one. Restore the original id, or "
+                                + "confirm the change deliberately.");
+            }
+            return existing;
+        }
+
+        DocumentType created = switch (arcadeType) {
+            case VERTEX -> schema.createVertexType(className);
+            case EDGE -> schema.createEdgeType(className);
+            case DOCUMENT -> schema.createDocumentType(className);
+        };
+        if (typeId != null) created.setCustomValue(ID_KEY, typeId);
+        return created;
+    }
+
     public static InitDoc initDocType(Database db, Class<?> clazz, ArcadeType arcadeType, List<Field_I<?, ?>> fields) {
         var CLASS = clazz.getSimpleName();
         DocumentType docType;
@@ -307,23 +396,111 @@ public class InitDoc {
         for (Field_I<?, ?> field : fieldsList) {
             ensureFieldFromMetadata(field);
         }
+        markOrphans();
         return this;
     }
 
     /**
-     * Ensure a field exists in the schema using Field_I metadata.
-     * ZERO REFLECTION - all type info comes from static field objects.
+     * Ensure a field exists in the schema using Field_I metadata, identity-aware (PRP-28 phase 2).
+     *
+     * <p>Match by id first, then by name, then create — the fixed diff order the design requires so
+     * partial adoption (some fields carry {@code @P}, some don't) degrades gracefully rather than
+     * producing a confused half-state. ZERO REFLECTION - all type info comes from static field objects.
      *
      * @param field the Field_I object with metadata
-     * @return the created or existing Property
+     * @return the resolved Property — an existing one (possibly still under its OLD name; see below),
+     *         or a newly created one
+     * @throws IllegalStateException if the declared id belongs to a property already marked orphaned
+     *         (a retired id reused, or a field restored mid-refactor — either way, not a rename), or
+     *         if an EXISTING property of this name already records a DIFFERENT, non-null id (the
+     *         signature of an edited or mistyped {@code @P})
      */
     public Property ensureFieldFromMetadata(Field_I<?, ?> field) {
         String fieldName = field.name();
+        String stableId = field.stableId();
 
-        if (documentType.existsProperty(fieldName)) {
-            return documentType.getProperty(fieldName);
+        if (stableId != null) {
+            Property byId = recordedPropsById.get(stableId);
+            if (byId != null) {
+                if (byId.getCustomValue(ORPHANED_AT_KEY) != null) {
+                    throw new IllegalStateException(
+                            "Field '" + fieldName + "' is declared with id '" + stableId + "', but that "
+                                    + "id belongs to a property this schema already marked ORPHANED "
+                                    + "(formerly '" + byId.getName() + "'). A real rename keeps its id "
+                                    + "continuously present, so a declared id landing on an orphan is "
+                                    + "either a field restored after being commented out, or a retired id "
+                                    + "reused for something new - neither is a rename, and both need a "
+                                    + "deliberate decision rather than an automatic migration. Mint a "
+                                    + "fresh id with 'datapotter-id new' if this is genuinely a new field.");
+                }
+                touchedPropertyNames.add(byId.getName());
+                if (!byId.getName().equals(fieldName)) {
+                    // Rename DETECTED, not applied. ArcadeDB has no property-rename primitive; applying
+                    // this is phase 3, over the five-statement recipe measured in 28-prp.05/.06. The
+                    // property keeps its CURRENT name until then - reporting is the safety this phase
+                    // exists to add, over silently creating a second property beside an orphan.
+                    System.err.println("NOTE: field '" + byId.getName() + "' appears renamed to '"
+                            + fieldName + "' (matched by id '" + stableId + "'). Not applied - a property "
+                            + "rename is phase 3. It keeps its current name '" + byId.getName()
+                            + "' in the schema for now.");
+                }
+                return byId;
+            }
         }
 
+        touchedPropertyNames.add(fieldName);
+
+        if (documentType.existsProperty(fieldName)) {
+            Property existing = documentType.getProperty(fieldName);
+            if (stableId != null) {
+                Object recordedId = existing.getCustomValue(ID_KEY);
+                if (recordedId == null) {
+                    existing.setCustomValue(ID_KEY, stableId); // first-time adoption
+                } else if (!stableId.equals(recordedId)) {
+                    throw new IllegalStateException(
+                            "Field '" + fieldName + "' is declared with id '" + stableId + "' but the "
+                                    + "schema already records it under a DIFFERENT id ('" + recordedId
+                                    + "'). This is the signature of an edited or mistyped @P - renaming a "
+                                    + "field is free, but editing its id is not, and doing so would orphan "
+                                    + "the column recorded under the old one. Restore the original id, or "
+                                    + "confirm the change deliberately.");
+                }
+            }
+            return existing;
+        }
+
+        Property created = createProperty(field, fieldName);
+        if (stableId != null) created.setCustomValue(ID_KEY, stableId);
+        return created;
+    }
+
+    /**
+     * Any recorded property carrying an id that no declared field claimed this run is marked
+     * orphaned — never dropped. A uuid vanishing from source is ambiguous (a deleted field, or one
+     * merely commented out mid-refactor), so guessing would destroy data; a deliberate drop command
+     * is the only sanctioned way to actually remove one.
+     */
+    private void markOrphans() {
+        for (var entry : recordedPropsByName.entrySet()) {
+            String name = entry.getKey();
+            if (touchedPropertyNames.contains(name)) continue;
+            Property p = entry.getValue();
+            if (p.getCustomValue(ID_KEY) == null) continue;        // unidentified - not this design's business
+            if (p.getCustomValue(ORPHANED_AT_KEY) != null) continue; // already marked
+            p.setCustomValue(ORPHANED_AT_KEY, java.time.Instant.now().toString());
+            System.err.println("NOTE: property '" + name + "' (id '" + p.getCustomValue(ID_KEY)
+                    + "') is no longer declared in source. Marked orphaned; its data is retained. "
+                    + "A deliberate drop command is required to actually remove it.");
+        }
+    }
+
+    /**
+     * The actual property-creation switch, unchanged in shape from before PRP-28 phase 2 — identity
+     * (matching, adoption, the orphan mark) is a layer around this, not a change to it.
+     *
+     * @return the newly created Property
+     */
+    private Property createProperty(Field_I<?, ?> field, String fieldName) {
         // Exhaustive over the sealed Field_I — see collectDependencies for why there is no default.
         return switch (field) {
             case DataField<?, ?> dataField -> {

@@ -8,6 +8,7 @@ import datapotter.datahelper.processor.util.CodeGeneratorUtils;
 import datapotter.datahelper.processor.util.FieldAnalyzer;
 import datapotter.datahelper.processor.util.FieldInfo;
 import datapotter.datahelper.processor.util.ProcessorUtils;
+import datapotter.datahelper.processor.util.PropertyIds;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Processor;
@@ -22,8 +23,10 @@ import javax.lang.model.element.TypeElement;
 import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -68,6 +71,19 @@ public class ArcadeDataProcessor extends AbstractProcessor {
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
+        // Type-id validation and duplicate detection (DP-ID-001/002/003/005) run over every
+        // @ArcadeData element in this round BEFORE any class is generated — the same reason
+        // EnumVocabProcessor validates independently of any consumer: this processor sees every
+        // @ArcadeData(uuid=...) there is, so a malformed or duplicate type id fails here rather
+        // than surfacing as a confusing schema-init error, or never if nobody notices.
+        Map<String, String> typeIdToClassName = new HashMap<>();
+        for (TypeElement annotation : annotations) {
+            for (Element element : roundEnv.getElementsAnnotatedWith(annotation)) {
+                if (element.getKind() != ElementKind.CLASS) continue;
+                validateTypeId((TypeElement) element, typeIdToClassName);
+            }
+        }
+
         for (TypeElement annotation : annotations) {
             for (Element element : roundEnv.getElementsAnnotatedWith(annotation)) {
                 if (element.getKind() == ElementKind.CLASS) {
@@ -78,6 +94,37 @@ public class ArcadeDataProcessor extends AbstractProcessor {
             }
         }
         return true;
+    }
+
+    private void validateTypeId(TypeElement element, Map<String, String> typeIdToClassName) {
+        String uuid = element.getAnnotation(ArcadeData.class).uuid();
+        if (uuid.isEmpty()) return; // Opted out — matches by name, exactly as today.
+
+        String className = element.getSimpleName().toString();
+        PropertyIds.ValidationResult result = PropertyIds.validate(uuid);
+        if (!result.valid()) {
+            String code = switch (result.problem()) {
+                case WRONG_LENGTH -> "DP-ID-001";
+                case BAD_CHARACTER -> "DP-ID-002";
+                case BAD_CHECK -> "DP-ID-003";
+            };
+            String message = code + ": type '" + className + "' has @ArcadeData(uuid=\"" + uuid + "\") — "
+                    + result.message();
+            // DP-ID-003 lists all six single-character repairs (28-prp.04 section 6).
+            if (!result.repairCandidates().isEmpty()) {
+                message += " Candidates: " + String.join(", ", result.repairCandidates());
+            }
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, message, element);
+            return;
+        }
+
+        String priorClass = typeIdToClassName.putIfAbsent(uuid, className);
+        if (priorClass != null) {
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
+                    "DP-ID-005: type '" + className + "' has the same id ('" + uuid + "') as type '"
+                            + priorClass + "'. Every @ArcadeData(uuid=...) in this compilation must be "
+                            + "unique — mint a new one with 'datapotter-id new'.", element);
+        }
     }
 
     private void generateAbstractClass(TypeElement element) {
@@ -121,6 +168,25 @@ public class ArcadeDataProcessor extends AbstractProcessor {
         }
         if (hasUnsupportedEnum) {
             return;
+        }
+
+        // requireIds (PRP-28 phase 2): a per-type, compile-time completeness check, default false.
+        // Fails naming EVERY unidentified field at once with a freshly minted id ready to paste —
+        // not merely the first — since a build failure that only mentions one field would otherwise
+        // be fixed and rerun N times for N missing ids.
+        if (annotation.requireIds()) {
+            boolean hasUnidentified = false;
+            for (FieldInfo f : fields) {
+                if (f.stableId == null) {
+                    processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
+                            "DP-ID-010: field '" + f.name + "' has no @P, but '" + className
+                                    + "' declares requireIds = true. Add @P(\"" + PropertyIds.mint()
+                                    + "\") " + f.type + " " + f.name + ";",
+                            element);
+                    hasUnidentified = true;
+                }
+            }
+            if (hasUnidentified) return;
         }
 
         // Warn (don't fail) when a data field is spelled like a reserved graph accessor: the $rid
@@ -181,7 +247,7 @@ public class ArcadeDataProcessor extends AbstractProcessor {
         classBuilder.addField(classNameField);
 
         // Add schemaBuilder() helper
-        addTypeDefHelper(classBuilder, packageName, className, arcadeType);
+        addTypeDefHelper(classBuilder, packageName, className, arcadeType, annotation.uuid());
 
         // Add delegating getters
         for (FieldInfo field : fields) {
@@ -439,18 +505,26 @@ public class ArcadeDataProcessor extends AbstractProcessor {
      * </pre>
      *
      * @param arcadeType The type from @ArcadeData annotation ("DOCUMENT", "VERTEX", or "EDGE")
+     * @param typeId     the type's {@code @ArcadeData(uuid=...)}, or {@code ""} if none declared
      */
-    private void addTypeDefHelper(TypeSpec.Builder classBuilder, String packageName, String className, String arcadeType) {
-        MethodSpec schemaBuilderHelper = MethodSpec.methodBuilder("schemaBuilder")
+    private void addTypeDefHelper(TypeSpec.Builder classBuilder, String packageName, String className,
+                                   String arcadeType, String typeId) {
+        MethodSpec.Builder schemaBuilderHelper = MethodSpec.methodBuilder("schemaBuilder")
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                 .returns(ParameterizedTypeName.get(
                         ClassName.get("datapotter.arcadedbhelper", "SchemaBuilder"),
-                        ClassName.get(packageName, className)))
-                .addStatement("return defType($T.class, $T.$L).fields(FIELDS)",
-                        ClassName.get(packageName, className),
-                        ClassName.get("datapotter.arcadedbhelper", "ArcadeType"),
-                        arcadeType)
-                .build();
-        classBuilder.addMethod(schemaBuilderHelper);
+                        ClassName.get(packageName, className)));
+        if (typeId.isEmpty()) {
+            schemaBuilderHelper.addStatement("return defType($T.class, $T.$L).fields(FIELDS)",
+                    ClassName.get(packageName, className),
+                    ClassName.get("datapotter.arcadedbhelper", "ArcadeType"),
+                    arcadeType);
+        } else {
+            schemaBuilderHelper.addStatement("return defType($T.class, $T.$L).fields(FIELDS).typeId($S)",
+                    ClassName.get(packageName, className),
+                    ClassName.get("datapotter.arcadedbhelper", "ArcadeType"),
+                    arcadeType, typeId);
+        }
+        classBuilder.addMethod(schemaBuilderHelper.build());
     }
 }

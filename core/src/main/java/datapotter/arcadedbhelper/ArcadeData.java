@@ -81,4 +81,31 @@ public @interface ArcadeData {
      * @return the type
      */
     ArcadeType type() default ArcadeType.DOCUMENT;
+
+    /**
+     * The type's stable identity (PRP-28 phase 2): six base64url characters, five random plus one
+     * check character, exactly like {@link datapotter.datahelper.P} on a field. Empty (the default)
+     * means opted out — the type still matches by name, exactly as it does today.
+     *
+     * <p>A class renamed while this id stays unchanged renames the underlying ArcadeDB type outright
+     * at schema init (via the safe drop-index/rename/rebuild-index sequence — a bare engine rename on
+     * some versions silently destroys every index on the type). Format and uniqueness across the
+     * whole schema are validated by the same processor logic that validates {@code @P}.
+     *
+     * @return the type id, or {@code ""} if none is declared
+     */
+    String uuid() default "";
+
+    /**
+     * When {@code true}, every field of this type must carry {@code @P} — the build fails, naming
+     * each unidentified field with a freshly minted id to paste. Default {@code false}, so adoption
+     * is gradual: nothing existing breaks by turning this feature on for one field at a time.
+     *
+     * <p>Deliberately not named {@code strict} — that word already names the (separate, not yet
+     * built) whole-schema migration policy. This is a per-type, compile-time completeness check and
+     * produces no migration behaviour of its own: it either fails a build, or it does not.
+     *
+     * @return whether every field of this type must be identified
+     */
+    boolean requireIds() default false;
 }

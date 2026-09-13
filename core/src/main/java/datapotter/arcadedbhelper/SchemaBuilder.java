@@ -27,6 +27,7 @@ public class SchemaBuilder<E extends DataHelper_I<E>> implements TypeDef<E> {
     private final Class<E> definition;
     private final ArcadeType arcadeType;
     private java.util.function.Supplier<E> factory;
+    private String typeId;
     private List<String> fields = new ArrayList<>();
     private List<Field_I<E, ?>> fieldObjects = new ArrayList<>();  // Store actual Field_I objects
     private List<Field_I<E, ?>> linkFields = new ArrayList<>();  // LINK type fields ($$prefix)
@@ -223,6 +224,24 @@ public class SchemaBuilder<E extends DataHelper_I<E>> implements TypeDef<E> {
     @Override
     public java.util.function.Supplier<E> factory() {
         return factory;
+    }
+
+    /**
+     * Declare the type's stable identity (PRP-28 phase 2), from the generated {@code @ArcadeData(uuid=...)}.
+     * Not called at all when the annotation's {@code uuid} is empty — "no identity" stays {@code null},
+     * never {@code ""}.
+     *
+     * @param typeId the type id
+     * @return this builder
+     */
+    public SchemaBuilder<E> typeId(String typeId) {
+        this.typeId = typeId;
+        return this;
+    }
+
+    @Override
+    public String typeId() {
+        return typeId;
     }
 
     @Override
