@@ -26,7 +26,7 @@ public interface TypeDef<E extends DataHelper_I<E>> {
     }
 
     /**
-     * This type's stable identity (PRP-28 phase 2), from {@code @ArcadeData(uuid=...)}, or
+     * This type's stable identity (PRP-28 phase 2), from {@code @ArcadeData(id=...)}, or
      * {@code null} if none is declared. {@code null} rather than {@code ""} — a {@code TypeDef}
      * written before this existed still compiles and still means "no identity opted in", the same
      * idiom {@link #factory()} already uses.

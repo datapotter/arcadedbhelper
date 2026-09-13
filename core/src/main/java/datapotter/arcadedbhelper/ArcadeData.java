@@ -87,6 +87,12 @@ public @interface ArcadeData {
      * check character, exactly like {@link datapotter.datahelper.P} on a field. Empty (the default)
      * means opted out — the type still matches by name, exactly as it does today.
      *
+     * <p>Named {@code id}, not {@code uuid}: it is six characters with a one-character checksum, not
+     * a universally unique identifier, and calling it that overclaims a guarantee it doesn't carry.
+     * Cross-schema uniqueness is checked at compile time (a duplicate is {@code DP-ID-005}); global
+     * uniqueness was never the promise, so the word "uuid" belongs to phase 1's real 128-bit
+     * {@code @AsUuid} and not here.
+     *
      * <p>A class renamed while this id stays unchanged renames the underlying ArcadeDB type outright
      * at schema init (via the safe drop-index/rename/rebuild-index sequence — a bare engine rename on
      * some versions silently destroys every index on the type). Format and uniqueness across the
@@ -94,7 +100,7 @@ public @interface ArcadeData {
      *
      * @return the type id, or {@code ""} if none is declared
      */
-    String uuid() default "";
+    String id() default "";
 
     /**
      * When {@code true}, every field of this type must carry {@code @P} — the build fails, naming

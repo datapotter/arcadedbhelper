@@ -227,8 +227,8 @@ public class SchemaBuilder<E extends DataHelper_I<E>> implements TypeDef<E> {
     }
 
     /**
-     * Declare the type's stable identity (PRP-28 phase 2), from the generated {@code @ArcadeData(uuid=...)}.
-     * Not called at all when the annotation's {@code uuid} is empty — "no identity" stays {@code null},
+     * Declare the type's stable identity (PRP-28 phase 2), from the generated {@code @ArcadeData(id=...)}.
+     * Not called at all when the annotation's {@code id} is empty — "no identity" stays {@code null},
      * never {@code ""}.
      *
      * @param typeId the type id

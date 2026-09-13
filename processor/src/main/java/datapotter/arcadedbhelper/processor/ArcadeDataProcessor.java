@@ -74,7 +74,7 @@ public class ArcadeDataProcessor extends AbstractProcessor {
         // Type-id validation and duplicate detection (DP-ID-001/002/003/005) run over every
         // @ArcadeData element in this round BEFORE any class is generated — the same reason
         // EnumVocabProcessor validates independently of any consumer: this processor sees every
-        // @ArcadeData(uuid=...) there is, so a malformed or duplicate type id fails here rather
+        // @ArcadeData(id=...) there is, so a malformed or duplicate type id fails here rather
         // than surfacing as a confusing schema-init error, or never if nobody notices.
         Map<String, String> typeIdToClassName = new HashMap<>();
         for (TypeElement annotation : annotations) {
@@ -97,18 +97,18 @@ public class ArcadeDataProcessor extends AbstractProcessor {
     }
 
     private void validateTypeId(TypeElement element, Map<String, String> typeIdToClassName) {
-        String uuid = element.getAnnotation(ArcadeData.class).uuid();
-        if (uuid.isEmpty()) return; // Opted out — matches by name, exactly as today.
+        String id = element.getAnnotation(ArcadeData.class).id();
+        if (id.isEmpty()) return; // Opted out — matches by name, exactly as today.
 
         String className = element.getSimpleName().toString();
-        PropertyIds.ValidationResult result = PropertyIds.validate(uuid);
+        PropertyIds.ValidationResult result = PropertyIds.validate(id);
         if (!result.valid()) {
             String code = switch (result.problem()) {
                 case WRONG_LENGTH -> "DP-ID-001";
                 case BAD_CHARACTER -> "DP-ID-002";
                 case BAD_CHECK -> "DP-ID-003";
             };
-            String message = code + ": type '" + className + "' has @ArcadeData(uuid=\"" + uuid + "\") — "
+            String message = code + ": type '" + className + "' has @ArcadeData(id=\"" + id + "\") — "
                     + result.message();
             // DP-ID-003 lists all six single-character repairs (28-prp.04 section 6).
             if (!result.repairCandidates().isEmpty()) {
@@ -118,11 +118,11 @@ public class ArcadeDataProcessor extends AbstractProcessor {
             return;
         }
 
-        String priorClass = typeIdToClassName.putIfAbsent(uuid, className);
+        String priorClass = typeIdToClassName.putIfAbsent(id, className);
         if (priorClass != null) {
             processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
-                    "DP-ID-005: type '" + className + "' has the same id ('" + uuid + "') as type '"
-                            + priorClass + "'. Every @ArcadeData(uuid=...) in this compilation must be "
+                    "DP-ID-005: type '" + className + "' has the same id ('" + id + "') as type '"
+                            + priorClass + "'. Every @ArcadeData(id=...) in this compilation must be "
                             + "unique — mint a new one with 'datapotter-id new'.", element);
         }
     }
@@ -247,7 +247,7 @@ public class ArcadeDataProcessor extends AbstractProcessor {
         classBuilder.addField(classNameField);
 
         // Add schemaBuilder() helper
-        addTypeDefHelper(classBuilder, packageName, className, arcadeType, annotation.uuid());
+        addTypeDefHelper(classBuilder, packageName, className, arcadeType, annotation.id());
 
         // Add delegating getters
         for (FieldInfo field : fields) {
@@ -505,7 +505,7 @@ public class ArcadeDataProcessor extends AbstractProcessor {
      * </pre>
      *
      * @param arcadeType The type from @ArcadeData annotation ("DOCUMENT", "VERTEX", or "EDGE")
-     * @param typeId     the type's {@code @ArcadeData(uuid=...)}, or {@code ""} if none declared
+     * @param typeId     the type's {@code @ArcadeData(id=...)}, or {@code ""} if none declared
      */
     private void addTypeDefHelper(TypeSpec.Builder classBuilder, String packageName, String className,
                                    String arcadeType, String typeId) {

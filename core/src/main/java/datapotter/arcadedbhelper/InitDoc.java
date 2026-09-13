@@ -357,7 +357,7 @@ public class InitDoc {
                 throw new IllegalStateException(
                         "Type '" + className + "' is declared with id '" + typeId + "' but the schema "
                                 + "already records it under a DIFFERENT id ('" + recordedId + "'). This is "
-                                + "the signature of an edited or mistyped @ArcadeData(uuid=...) — renaming "
+                                + "the signature of an edited or mistyped @ArcadeData(id=...) — renaming "
                                 + "is free, but editing an id is not, and doing so would orphan every "
                                 + "property recorded against the old one. Restore the original id, or "
                                 + "confirm the change deliberately.");
@@ -513,7 +513,7 @@ public class InitDoc {
 
     /**
      * Any recorded property carrying an id that no declared field claimed this run is marked
-     * orphaned — never dropped. A uuid vanishing from source is ambiguous (a deleted field, or one
+     * orphaned — never dropped. An id vanishing from source is ambiguous (a deleted field, or one
      * merely commented out mid-refactor), so guessing would destroy data; a deliberate drop command
      * is the only sanctioned way to actually remove one.
      */
