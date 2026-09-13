@@ -23,7 +23,7 @@ public final class Person extends Person_A {       // Person_A is generated
 MigrationPlan plan = InitDoc.initDocTypes(db, Person.TYPEDEF);
 
 // Typed, lazy queries. Neither a field name nor a type name is ever a bare string:
-for (Person p : query(db, Person.TYPEDEF).eq($city, "Chennai").orderByAsc($name)) { ... }
+for (Person p : query(db, Person.TYPEDEF).eq($city, "Novosibirsk").orderByAsc($name)) { ... }
 
 db.transaction(() -> upsert(db, Person.TYPEDEF).key($email, email).set($age, 30).save());
 ```

@@ -61,7 +61,7 @@ import static datapotter.arcadedbhelper.Query.query;
 import static datapotter.arcadedbhelper.Upsert.upsert;
 
 // READ — lazy. A Query IS an Iterable: nothing is buffered, and break stops the scan.
-for (Person p : query(db, Person.TYPEDEF).eq($city, "Chennai").orderByAsc($name)) { ... }
+for (Person p : query(db, Person.TYPEDEF).eq($city, "Novosibirsk").orderByAsc($name)) { ... }
 
 Person one = query(db, Person.TYPEDEF).eq($email, email).firstOrNull();
 long adults = query(db, Person.TYPEDEF).ge($age, 18).count();
