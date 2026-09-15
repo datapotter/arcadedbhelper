@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>io.github.datapotter</groupId>
     <artifactId>datapotter-arcadedbhelper-parent</artifactId>
-    <version>2.0</version>
+    <version>2.1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>DataPotter ArcadeDBHelper (parent)</name>
@@ -64,6 +64,20 @@
       and publishing wiring the modules have. Without it the deploy phase falls through to
       maven-deploy-plugin, which has no distributionManagement and fails the reactor before a
       single module is uploaded.
+
+      RELEASE WITH MAVEN 3, NOT MAVEN 4:
+
+          C:\user\Apps\cmdtools\maven\apache-maven\bin\mvn.cmd clean deploy -Dorg.name=datapotter
+
+      central-publishing-maven-plugin 0.9.0 is a Maven 3 plugin. Under Maven 4 the extensions=true
+      lifecycle binding below does not take effect: gpg:sign and install run, the reactor prints
+      BUILD SUCCESS, and NOTHING IS EVER UPLOADED. There is no error to notice. Verify a release by
+      fetching the artifact from repo1.maven.org, never by trusting the build result. Propagation to
+      repo1 lags the portal by roughly ten to thirty minutes, so a 404 straight after a publish is
+      normal; the portal saying "was successfully published" is the authoritative signal.
+
+      datahelper.version must name a RELEASED core before this can be published at all: Central
+      rejects a release that depends on a snapshot.
     -->
     <profiles>
         <profile>
