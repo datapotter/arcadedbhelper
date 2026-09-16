@@ -40,7 +40,7 @@ This is the newest and most distinctive part of the library, and the reason the 
 
 **What it does automatically, at schema init (`InitDoc.initDocTypes`):**
 - A type matched by id under a new name is renamed outright, through a wrapper (`Rename.type`) that captures every index definition, drops the indexes, renames, and rebuilds them — because a bare engine rename on some ArcadeDB versions silently drops every index on the type (see below).
-- A property matched by id under a new name is *detected* and reported, but never renamed in place — ArcadeDB has no `ALTER PROPERTY .. NAME`, so applying it means rewriting every row. That is collected into a `MigrationPlan` instead of being done implicitly.
+- A property matched by id under a new name is *detected* and reported, but never renamed in place there and then — applying it is collected into a `MigrationPlan` instead of happening implicitly. Why it isn't free even now that ArcadeDB has a native rename: see the note right below.
 - An id that vanishes from source is marked orphaned, never dropped — the ambiguity between "deleted field" and "commented out mid-refactor" is real, and guessing wrong destroys data.
 - An edited id — same field, a different but valid id — is refused with an exception naming the collision, rather than silently creating a second property.
 
@@ -54,9 +54,9 @@ if (!plan.isEmpty()) {
 }
 ```
 
-`apply` backs up the database, then runs a seven-statement recipe per rename — create the new property (Java API, carrying the old one's constraints and its own id), copy every row's value across, drop the indexes standing on the old property (ArcadeDB refuses to drop a property while one does), remove the old property, rebuild the indexes against the new name. Every step is journalled beside the database *before* the next one runs, so a crash mid-migration resumes from wherever it stopped rather than restarting or double-applying.
+`apply` backs up the database, then runs a six-step recipe per rename: drop the indexes standing on the old property (ArcadeDB refuses to rename while one does), rename via the engine's own `Property.rename(String)`, copy every row's value across, remove the old property, restore anything the rename's `readonly` carry-over would otherwise block, rebuild the indexes against the new name. Every step is journalled beside the database *before* the next one runs, so a crash mid-migration resumes rather than restarting or double-applying.
 
-This is exactly the workaround described in the feature request: **it is what we built because the engine doesn't yet have an in-place property rename.** If it grows one, most of this collapses to a single statement.
+**Correction worth being explicit about, because an earlier draft of this README overclaimed it:** the feature request above *shipped* — `Property.rename()` / `ALTER PROPERTY .. NAME` exist in ArcadeDB now. But it's a schema-metadata-only, lazy rename: a row written before the rename keeps answering under the *old* field name until it's next written; only a fresh write lands under the new one. So the engine's own primitive doesn't move existing data — it only makes the *schema* half of a rename free and complete (every constraint and custom value carries across in one call now, where this library used to hand-copy a subset and silently drop the rest). The data-copy step above is still ours to run. A separate, still-open proposal, [#7648](https://github.com/ArcadeData/arcadedb/issues/7648), asks for an *eager* variant that rewrites every record in the engine itself — that's the thing that would actually collapse the recipe further.
 
 ## Everything else
 
@@ -81,6 +81,8 @@ Real usage against a real ArcadeDB instance surfaced engine behaviour worth bein
 
 None of this is a knock on ArcadeDB — an embedded, single-writer, multi-model engine that's fast and pleasant to build on is a rare thing, which is the whole reason this library exists rather than reaching for something else. It's stated here because a persistence layer that hasn't been run hard enough to find these has not been tested, and because the migration engine's insistence on capturing-before-touching, journalling-before-acting, and refusing rather than guessing is a direct response to having watched an engine-level rename quietly eat a constraint.
 
+Also worth stating, because it's the good half of the same story: the property-rename feature request this project filed ([#7589](https://github.com/ArcadeData/arcadedb/issues/7589)) shipped in three days.
+
 ## Roadmap
 
 Honestly incomplete, in the spirit of the section above:
@@ -89,7 +91,7 @@ Honestly incomplete, in the spirit of the section above:
 - **Narrowing migrations** (`int → short`) decided by scanning the existing data at init, before the store opens for writes — safe here because ArcadeDB is embedded and single-writer, so there's no race to worry about.
 - **A schema history table** recording what the schema looked like at each run — its real payoff is a backup restored into much newer code, where the live database can no longer answer what changed.
 - **Bulk id minting/repair tooling** (`datapotter-id`) sharing the same implementation the processor already uses to mint ids one at a time on a failed build.
-- Whatever `ALTER PROPERTY .. NAME` — if ArcadeDB ships one — turns out to need on this side; most of the migration recipe above exists only because it doesn't yet.
+- Whatever ArcadeDB's [#7648](https://github.com/ArcadeData/arcadedb/issues/7648) (an eager, engine-side rewrite of every record on a property rename) turns out to need on this side, if it ships — it's the thing that would let the data-copy half of the recipe above go away too.
 
 ## Maven
 

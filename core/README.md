@@ -226,7 +226,7 @@ Six base64url characters, five random plus one checksum character, for both `@P`
 `InitDoc.initDocTypes` reads the current schema — by id, then by name — **before** creating or renaming anything, which is what makes detection possible at all (an eager `existsType` check would have already created the duplicate a rename must not produce):
 
 - **Type matched by id, different name → renamed outright**, through `Rename.type` (see below) rather than a bare engine rename.
-- **Property matched by id, different name → detected, not renamed.** ArcadeDB has no `ALTER PROPERTY .. NAME`; applying this rewrites every row (see the recipe below), so it's collected into a returned `MigrationPlan` instead of happening implicitly. The property keeps its current name until that plan is applied.
+- **Property matched by id, different name → detected, not renamed.** ArcadeDB's own `ALTER PROPERTY .. NAME` / `Property.rename()` is schema-only and lazy — see the recipe below for why applying this still needs a real data-migration step, not just that one call. Collected into a returned `MigrationPlan` instead of happening implicitly; the property keeps its current name until that plan is applied.
 - **Recorded id no longer claimed by any declared field → marked orphaned, never dropped.** An id vanishing from source is ambiguous — a deleted field, or one merely commented out mid-refactor — and guessing wrong destroys data. A deliberate drop is the only way to actually remove one.
 - **A name matches but the recorded id differs → refused with an exception naming both ids.** This is the signature of an edited or mistyped id, not a rename; restoring the original id or confirming the change deliberately are the only ways forward.
 - **A matched id also implies a type change → refused, not guessed.** `String` → `Integer` under one id is a data migration, not a rename.
@@ -241,16 +241,18 @@ if (!plan.isEmpty()) {
 }
 ```
 
-`apply` is the **only** method in this design that rewrites data. It backs up first, then runs a seven-step recipe per rename, journalling each step beside the database before the next one runs so a crash mid-migration resumes rather than restarts or double-applies:
+`apply` is the **only** method in this design that rewrites data. It backs up first, then runs a six-step recipe per rename, journalling each step beside the database before the next one runs so a crash mid-migration resumes rather than restarts or double-applies:
 
-1. Create the new property via the Java API (not inline `CREATE PROPERTY .. CUSTOM` — that clause doesn't parse on ArcadeDB 26.7.3 despite being documented), carrying the old property's type, `ofType`, constraints, and its own stable id.
-2. `UPDATE <T> SET <new> = <old>` — transactional; DML through `db.command` needs an explicit one.
-3. Drop every index standing on the *old* property — `DROP PROPERTY` refuses otherwise.
-4. `UPDATE <T> REMOVE <old>` — must run **after** step 2, or the column is nulled before anything copies it.
-5. Drop the old property.
-6. Rebuild the indexes captured in step 3, now naming the new property.
+1. Drop every index standing on the *old* property — `Property.rename()` refuses outright while one does, same as `DROP PROPERTY`.
+2. `old.rename(new)` — the schema swap, via ArcadeDB's own primitive (ArcadeData/arcadedb#7589). One call carries across type, `ofType`, every constraint, and every custom value — including `readonly`, which is a trap covered below.
+3. `UPDATE <T> SET <new> = <old>` — transactional; DML through `db.command` needs an explicit one.
+4. `UPDATE <T> REMOVE <old>` — must run **after** step 3, or the column is nulled before anything copies it.
+5. Restore `readonly` on the new property, if the old one had it set.
+6. Rebuild the indexes captured in step 1, now naming the new property.
 
-Every step is a no-op if its effect is already visible in the schema, so resuming from a stale journal entry is safe — what actually matters is that steps 2 and 4 can never run out of order, which the fixed sequence makes impossible to do by accident.
+Every step is a no-op if its effect is already visible in the schema, so resuming from a stale journal entry is safe — what actually matters is that steps 3 and 4 can never run out of order, which the fixed sequence makes impossible to do by accident.
+
+**Why the engine's own rename doesn't collapse this to one call, even though it now exists.** `Property.rename()` is schema-metadata-only and lazy: a row written before the rename keeps answering under the *old* field name until it's next written, and only a fresh write lands under the new one. So it makes the schema half of a rename free and complete — no more hand-copying a constraint list that used to silently drop any custom value other than this library's own id — but the data movement in steps 3-4 above is still ours to do. A separate, open proposal upstream, [#7648](https://github.com/ArcadeData/arcadedb/issues/7648), asks for an *eager* variant that rewrites every record in the engine itself; if it ships, steps 3-4 collapse into one engine statement.
 
 ### Renaming a type doesn't have the same problem — except it did
 
@@ -260,7 +262,6 @@ Every step is a no-op if its effect is already visible in the schema, so resumin
 
 ### Known gaps, stated rather than hidden
 
-- `readonly` is not carried onto the new property during a rename — a readonly property would refuse the very `UPDATE` the recipe needs.
 - The `UPDATE .. BATCH` size is a fixed default (1000), not yet a per-call tuning knob.
 - Narrowing a property's type (`int → short`) isn't handled — it would need a data scan to prove the existing values fit, which is planned but not built.
 - There is no bulk id-minting CLI yet; minting today happens one field at a time, via a failed build naming the id to paste.
