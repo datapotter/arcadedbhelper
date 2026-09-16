@@ -8,34 +8,52 @@ import com.arcadedb.schema.Schema;
 import java.util.List;
 
 /**
- * Applies ONE detected property rename (PRP-28 phase 3), over the seven-statement recipe measured
- * against a real engine in {@code 28-prp.05}/{@code .06} — set-based, not a document walk, because
- * ArcadeDB documents carry their own field names and there is no {@code ALTER PROPERTY .. NAME}.
+ * Applies ONE detected property rename (PRP-28 phase 3).
+ *
+ * <p>Leverages the native {@code Property.rename(String)} primitive ArcadeData/arcadedb#7589 shipped
+ * (commit {@code 392ba9d7b1}, milestone 26.10.1) for the schema half of the recipe. It carries EVERY
+ * attribute across in one call — type, {@code ofType}, mandatory, notNull, hidden, external,
+ * compression, min, max, regexp, default, readonly, and every CUSTOM value including our own identity
+ * key — which used to be a hand-maintained list here that silently dropped any custom value other
+ * than the id. The rename is schema-metadata-only (the engine's own {@code docs/7589-property-rename.md}
+ * spells out why: a record keys each field by a small integer id from a database-wide dictionary also
+ * shared by ordinary string values, so the engine cannot cheaply prove repointing it is safe without
+ * scanning every record): existing documents keep answering under the OLD name, and only a write made
+ * after the rename lands under the new one. So the data movement this recipe exists for is still ours
+ * to do — #7589 only makes the schema half free and complete instead of a hand-copied subset.
+ * (A separate, broader request — ArcadeData/arcadedb#7648, "eager" bulk-rewrite variants of
+ * {@code ALTER PROPERTY}/{@code DROP PROPERTY} — is open upstream and unrelated to what this class
+ * needs; it would let the ENGINE do what this recipe does by hand, not the other way round.)
  *
  * <p><b>The steps, in the only order that is safe:</b>
  * <ol>
- *   <li>Create the new property (Java API — sidesteps the inline {@code CREATE PROPERTY .. CUSTOM}
- *       parser bug live on 26.7.3), carrying the old property's type, {@code ofType} and constraints,
- *       and its stable id.
- *   <li>{@code UPDATE <T> SET <new> = <old>} — copies every row's value across. Needs an explicit
- *       transaction; DML through {@code db.command} does not open one on its own.
- *   <li>Drop every index standing on the OLD property. Must happen before the next step:
- *       {@code DROP PROPERTY} refuses while an index stands on the property it is dropping.
- *   <li>{@code UPDATE <T> REMOVE <old>} — also transactional. <b>Never runs before step 2</b>: doing
+ *   <li>Drop every index standing on the OLD property, captured first. {@code Property.rename}
+ *       refuses outright while one stands (mirrors {@code dropProperty}'s own refusal), and step 6
+ *       needs the shapes captured before they are gone.
+ *   <li>{@code old.rename(new)} — the schema swap, via the engine's own primitive. Carries
+ *       {@code readonly} across too, which is a trap: a readonly new property refuses the very
+ *       {@code UPDATE} the next step needs to run, so it is cleared here and restored in step 5,
+ *       never left set across the data copy.
+ *   <li>{@code UPDATE <T> SET <new> = <old>} — copies every row's value across, referencing
+ *       {@code <old>} as the plain literal field it now is: ArcadeDB's schema is descriptive, not
+ *       prescriptive, so a field does not need to be declared to be read or written. Needs an
+ *       explicit transaction; DML through {@code db.command} does not open one on its own.
+ *   <li>{@code UPDATE <T> REMOVE <old>} — also transactional. <b>Never runs before step 3</b>: doing
  *       so nulls the column, because by then there is nothing left in {@code <old>} to copy.
- *   <li>Drop the old property (Java API).
- *   <li>Recreate the indexes captured in step 3, now naming the NEW property.
+ *   <li>Restore {@code readonly} on the new property, if the old one had it set.
+ *   <li>Recreate the indexes captured in step 1, now naming the NEW property.
  * </ol>
  *
  * <p><b>Resumable by construction.</b> Every step is a no-op if its effect is already visible in the
  * schema, so re-running from a stale {@link MigrationJournal} entry is safe; what makes ordering
- * load-bearing is running steps 2 and 4 in the WRONG order, which this class's fixed sequence makes
+ * load-bearing is running steps 3 and 4 in the WRONG order, which this class's fixed sequence makes
  * impossible to do by accident.
  *
- * <p><b>Known gap, deliberately not built:</b> {@code readonly} is not carried onto the new property
- * (a readonly property would refuse the very UPDATE this recipe needs to run), and BATCH is a fixed
- * default rather than a per-call tuning knob. Neither is exercised by anything this library ships
- * against today.
+ * <p><b>The journal format changed along with the recipe</b> (a step number now means a different
+ * action, and it also carries the old {@code readonly} flag). No production database has ever run
+ * the six-statement recipe this replaces — see this PRP's own status file — so no live journal needs
+ * to survive the change; a stray one from a crash mid-run under the old code should simply be deleted
+ * and the rename re-attempted from scratch rather than resumed.
  */
 public final class PropertyMigration {
 
@@ -55,58 +73,66 @@ public final class PropertyMigration {
         if (type == null)
             throw new IllegalStateException("Type '" + plan.typeName() + "' does not exist — cannot apply " + plan);
 
-        // The index defs standing on the OLD property. Captured fresh from the live schema while it
-        // still exists (true up to and including step 2); once step 3 has dropped them the live
-        // schema can no longer answer this, so a resume past that point reads them back from the
-        // journal, which is exactly why they are written there the moment they are captured.
-        List<IndexDef> oldIndexDefs = step < 3
+        // Two facts about the OLD property that only exist before step 1 touches anything — captured
+        // fresh from the live schema on a first run, read back from the journal on any resume, since
+        // by then the rename may already have made the old property's handle gone.
+        List<IndexDef> oldIndexDefs = step < 1
                 ? Indexes.capture(db, plan.typeName()).stream()
                         .filter(d -> d.properties().contains(plan.oldName()))
                         .toList()
                 : journal.capturedIndexDefs(plan);
+        boolean wasReadonly = step < 1
+                ? type.existsProperty(plan.oldName()) && type.getProperty(plan.oldName()).isReadonly()
+                : journal.wasReadonly(plan);
 
         if (step < 1) {
-            createNewProperty(type, plan);
-            journal.markDoneWithIndexDefs(plan, 1, oldIndexDefs);
+            dropIndexesOnOld(db, type, oldIndexDefs);
+            journal.markDone(plan, 1, oldIndexDefs, wasReadonly);
         }
         if (step < 2) {
-            setNewFromOld(db, plan, batchSize);
-            journal.markDoneWithIndexDefs(plan, 2, oldIndexDefs);
+            renameViaEngine(type, plan, wasReadonly);
+            journal.markDone(plan, 2, oldIndexDefs, wasReadonly);
         }
         if (step < 3) {
-            dropIndexesOnOld(db, type, oldIndexDefs);
-            journal.markDoneWithIndexDefs(plan, 3, oldIndexDefs);
+            setNewFromOld(db, plan, batchSize);
+            journal.markDone(plan, 3, oldIndexDefs, wasReadonly);
         }
         if (step < 4) {
             removeOld(db, plan, batchSize);
-            journal.markDoneWithIndexDefs(plan, 4, oldIndexDefs);
+            journal.markDone(plan, 4, oldIndexDefs, wasReadonly);
         }
         if (step < 5) {
-            dropOldProperty(type, plan);
-            journal.markDoneWithIndexDefs(plan, 5, oldIndexDefs);
+            restoreReadonly(db, plan, wasReadonly);
+            journal.markDone(plan, 5, oldIndexDefs, wasReadonly);
         }
         if (step < 6) {
             rebuildIndexesOnNew(db, plan, oldIndexDefs);
-            journal.markDoneWithIndexDefs(plan, 6, oldIndexDefs);
+            journal.markDone(plan, 6, oldIndexDefs, wasReadonly);
         }
         journal.clear(plan);
     }
 
-    private static void createNewProperty(DocumentType type, PropertyRenamePlan plan) {
-        if (type.existsProperty(plan.newName())) return; // resumed after a partial create
-        Property old = type.getProperty(plan.oldName());
-        Property created = type.createProperty(plan.newName(), old.getType());
-        if (old.getOfType() != null) created.setOfType(old.getOfType());
-        created.setMandatory(old.isMandatory());
-        created.setNotNull(old.isNotNull());
-        created.setHidden(old.isHidden());
-        created.setExternal(old.isExternal());
-        if (old.getMin() != null) created.setMin(old.getMin());
-        if (old.getMax() != null) created.setMax(old.getMax());
-        if (old.getRegexp() != null) created.setRegexp(old.getRegexp());
-        if (old.getDefaultValue() != null) created.setDefaultValue(old.getDefaultValue());
-        if (old.getCompression() != null) created.setCompression(old.getCompression());
-        created.setCustomValue(InitDoc.ID_KEY, plan.id());
+    /**
+     * The schema swap, via the engine's own {@code Property.rename}. Every attribute — type,
+     * {@code ofType}, mandatory, notNull, hidden, external, compression, min, max, regexp, default,
+     * every CUSTOM value including {@link InitDoc#ID_KEY} — carries across in this one call; nothing
+     * here needs to know their names any more. {@code readonly} carries across too, and is cleared
+     * immediately so steps 3-4 can write into the new property; {@link #restoreReadonly} sets it
+     * back once the data copy is done.
+     */
+    private static void renameViaEngine(DocumentType type, PropertyRenamePlan plan, boolean wasReadonly) {
+        if (!type.existsProperty(plan.oldName()) && type.existsProperty(plan.newName())) {
+            // resumed after the rename landed but before the journal recorded step 2
+            if (wasReadonly) type.getProperty(plan.newName()).setReadonly(false);
+            return;
+        }
+        Property renamed = type.getProperty(plan.oldName()).rename(plan.newName());
+        if (wasReadonly) renamed.setReadonly(false);
+    }
+
+    private static void restoreReadonly(Database db, PropertyRenamePlan plan, boolean wasReadonly) {
+        if (!wasReadonly) return;
+        db.getSchema().getType(plan.typeName()).getProperty(plan.newName()).setReadonly(true);
     }
 
     private static void setNewFromOld(Database db, PropertyRenamePlan plan, int batchSize) {
@@ -126,11 +152,6 @@ public final class PropertyMigration {
     private static void removeOld(Database db, PropertyRenamePlan plan, int batchSize) {
         String sql = "UPDATE `" + plan.typeName() + "` REMOVE `" + plan.oldName() + "` BATCH " + batchSize;
         db.transaction(() -> db.command("sql", sql));
-    }
-
-    private static void dropOldProperty(DocumentType type, PropertyRenamePlan plan) {
-        if (!type.existsProperty(plan.oldName())) return; // already dropped, resumed run
-        type.dropProperty(plan.oldName());
     }
 
     private static void rebuildIndexesOnNew(Database db, PropertyRenamePlan plan, List<IndexDef> oldIndexDefs) {

@@ -13,9 +13,12 @@ import java.util.List;
 /**
  * Records which step of a property-rename recipe has completed, so a crash mid-recipe resumes from
  * the right place instead of re-running an already-applied, non-idempotent step (PRP-28 phase 3).
- * ALSO carries the index definitions captured off the OLD property before they are dropped, because
- * once they are dropped the live schema can no longer answer what they were — a resume that only
- * remembered a step number would have nothing left to rebuild step 6 from.
+ * ALSO carries two facts about the OLD property that only exist before step 1 touches anything, and
+ * that step 6 (the index rebuild) and step 5 (the readonly restore) need back after the live schema
+ * can no longer answer them: the index definitions standing on it, and whether it was itself
+ * {@code readonly} — the engine's own {@code Property.rename} carries {@code readonly} onto the new
+ * property too, which would otherwise refuse the data-copy update, so it is cleared right after the
+ * rename and this is what lets a resume know whether to set it back.
  *
  * <p><b>Why this is not a row in the database being migrated.</b> The crash this exists for is
  * exactly the one that might leave that database inconsistent, and asking the thing that might be
@@ -66,7 +69,7 @@ public final class MigrationJournal {
     }
 
     /**
-     * The index definitions captured before step 3 dropped them — read back on resume so step 6 can
+     * The index definitions captured before step 1 dropped them — read back on resume so step 6 can
      * rebuild them without the live schema, which by then may no longer carry any trace of them.
      */
     public List<IndexDef> capturedIndexDefs(PropertyRenamePlan plan) {
@@ -83,19 +86,33 @@ public final class MigrationJournal {
         return out;
     }
 
-    /** Record step 1's completion together with the index defs step 6 will need once step 3 drops them. */
-    public void markDoneWithIndexDefs(PropertyRenamePlan plan, int step, List<IndexDef> defs) {
+    /**
+     * Whether the OLD property was itself {@code readonly}, captured before step 1 touched anything.
+     * False if never recorded — which also means "no" for a fresh journal, correctly, since a
+     * property that was never readonly needs nothing restored.
+     */
+    public boolean wasReadonly(PropertyRenamePlan plan) {
+        Path f = fileFor(plan);
+        if (!Files.exists(f)) return false;
+        for (String line : readLines(f)) {
+            if (line.startsWith("readonly=")) return Boolean.parseBoolean(line.substring(9).trim());
+        }
+        return false;
+    }
+
+    /**
+     * Record a step's completion together with the index defs and the old {@code readonly} flag
+     * captured before step 1 ran — both are gone from the live schema by the time a later step, or a
+     * resume, would otherwise need them.
+     */
+    public void markDone(PropertyRenamePlan plan, int step, List<IndexDef> defs, boolean wasReadonly) {
         var lines = new ArrayList<String>();
         lines.add("step=" + step);
+        lines.add("readonly=" + wasReadonly);
         for (IndexDef d : defs) {
             lines.add("index=" + d.kind() + "|" + d.unique() + "|" + String.join(",", d.properties()));
         }
         write(fileFor(plan), lines);
-    }
-
-    /** Record that this step just completed, before the next one starts. Keeps any index defs already filed. */
-    public void markDone(PropertyRenamePlan plan, int step) {
-        markDoneWithIndexDefs(plan, step, capturedIndexDefs(plan));
     }
 
     /** The whole recipe finished: nothing left to resume for this rename. */

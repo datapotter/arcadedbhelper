@@ -137,7 +137,13 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
-        <arcadedb.version>26.7.3</arcadedb.version>
+        <!--
+          26.10.1-SNAPSHOT, not a released version, while developing against ArcadeData/arcadedb#7589
+          (native Property.rename / ALTER PROPERTY .. NAME, milestone 26.10.1 — see PropertyMigration).
+          Point this at the released 26.10.1 the day it ships, same rule datahelper.version already
+          follows one level up: Central rejects a release depending on a snapshot.
+        -->
+        <arcadedb.version>26.10.1-SNAPSHOT</arcadedb.version>
     </properties>
 
     <dependencies>
