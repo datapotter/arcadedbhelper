@@ -21,9 +21,11 @@ import java.util.List;
  * scanning every record): existing documents keep answering under the OLD name, and only a write made
  * after the rename lands under the new one. So the data movement this recipe exists for is still ours
  * to do — #7589 only makes the schema half free and complete instead of a hand-copied subset.
- * (A separate, broader request — ArcadeData/arcadedb#7648, "eager" bulk-rewrite variants of
- * {@code ALTER PROPERTY}/{@code DROP PROPERTY} — is open upstream and unrelated to what this class
- * needs; it would let the ENGINE do what this recipe does by hand, not the other way round.)
+ * (ArcadeData/arcadedb#7648, open upstream at milestone 26.11.1, proposes the OTHER half of this
+ * same problem: an "eager" {@code ALTER PROPERTY .. RENAME} that would have the ENGINE itself
+ * rewrite every record from the old field to the new one — exactly the data movement steps 3-4
+ * below do by hand today. If it ships, those two steps collapse into one engine statement; until
+ * then this class is the only way to migrate the data.)
  *
  * <p><b>The steps, in the only order that is safe:</b>
  * <ol>
