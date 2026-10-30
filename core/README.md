@@ -299,4 +299,4 @@ Every step is a no-op if its effect is already visible in the schema, so resumin
 
 This README is the quick orientation. The complete, worked guide — VERTEX/EDGE graph modelling, links, embedded types, the database-service pattern, all CRUD operations, the type-safe vs string-based query API, transactions, and database-lifecycle do's and don'ts — lives in:
 
-`project-journals/aracde_db_context/arcade-db-working-examples-2026-07-31.md`
+[javafanboys/guidelines-java/arcadedb.md](https://github.com/javafanboys/guidelines-java/blob/main/arcadedb.md)
